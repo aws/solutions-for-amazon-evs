@@ -1,0 +1,44 @@
+{
+  "environmentName": "my-evs-environment",
+  "vpcId": "vpc-0123456789abcdef0",
+  "serviceAccessSubnetId": "subnet-0123456789abcdef0",
+  "_comment_evsEnvVersion": "Value sent to the EVS CreateEnvironment API as 'vcfVersion'. Must be 'SELF_DEPLOYED' for our flow (EVS is never asked to deploy VCF; Phase 3 does it).",
+  "evsEnvVersion": "SELF_DEPLOYED",
+  "termsAccepted": true,
+  "initialVlans": {
+    "vmkManagement": { "cidr": "10.0.10.0/24" },
+    "vMotion": { "cidr": "10.0.20.0/24" },
+    "vSan": { "cidr": "10.0.30.0/24" },
+    "vTep": { "cidr": "10.0.40.0/24" },
+    "edgeVTep": { "cidr": "10.0.50.0/24" },
+    "vmManagement": { "cidr": "10.0.60.0/24" },
+    "hcx": { "cidr": "10.0.70.0/24" },
+    "nsxUplink": { "cidr": "10.0.80.0/24" },
+    "expansionVlan1": { "cidr": "10.0.90.0/24" },
+    "expansionVlan2": { "cidr": "10.0.100.0/24" }
+  },
+  "region": "us-east-1",
+  "environmentId": "env-0123456789",
+  "_comment_esxVersion": "Optional override. If omitted, the latest ESXi version matching vcfInstallerProductVersion is auto-resolved via the EVS get-versions API. Set to an exact build string to pin (e.g. 'ESXi-9.1.0.0100.25433460').",
+  "esxVersion": null,
+  "additionalHosts": [
+    { "hostName": "esxi01", "keyName": "EVS-WS-KeyPair", "instanceType": "i4i.metal" },
+    { "hostName": "esxi02", "keyName": "EVS-WS-KeyPair", "instanceType": "i4i.metal" },
+    { "hostName": "esxi03", "keyName": "EVS-WS-KeyPair", "instanceType": "i4i.metal" }
+  ],
+
+  "fips": false,
+  "ceip": false,
+  "vcfInstance": "EVS-Management",
+  "ntp": ["time.aws.com"],
+  "simpleDeployment": true,
+  "_comment_vcfInstallerProductVersion": "REQUIRED. Full VCF product version baked into the installer OVA (e.g. '9.0.2.0' or '9.1.0.0'). Sent as the top-level 'version' field on the bringup spec. Check the installer UI or the OVA file name for the exact value.",
+  "vcfInstallerProductVersion": "9.0.2.0",
+  "vcfSizing": {
+    "vcenterSize": "small",
+    "vcenterStorageSize": "lstorage",
+    "nsxSize": "medium",
+    "operationsApplianceSize": "small",
+    "operationsCollectorApplianceSize": "small"
+  }
+}
