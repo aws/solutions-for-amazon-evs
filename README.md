@@ -8,7 +8,7 @@ This repository contains automation solutions for [Amazon Elastic VMware Service
 
 | Solution | Description |
 |----------|-------------|
-| [VCF 9 Phased Deployment](Deploy/VCF9-Phased-Deployment/) | End-to-end automation for provisioning an Amazon EVS environment and deploying VMware Cloud Foundation 9.0.x, including AWS networking infrastructure, EVS environment creation, VCF bringup, and NSX edge cluster deployment. |
+| [VCF 9 Phased Deployment](Deploy/VCF9-Phased-Deployment/) | End-to-end automation for provisioning an Amazon EVS environment and deploying VMware Cloud Foundation 9.0 or 9.1, including AWS networking infrastructure, EVS environment creation, VCF bringup, and NSX edge cluster deployment. |
 
 ### Why automate?
 
