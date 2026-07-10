@@ -314,10 +314,14 @@ resource "aws_ec2_transit_gateway_vpc_attachment" "evs" {
 # EC2 Key Pair (server-side generated, private key stored in SSM automatically)
 ###############################################################################
 
+resource "random_id" "evs_key_suffix" {
+  byte_length = 4
+}
+
 resource "awscc_ec2_key_pair" "evs" {
-  key_name   = "EVS-WS-KeyPair"
+  key_name   = "EVS-WS-KeyPair-${random_id.evs_key_suffix.hex}"
   key_type   = "rsa"
   key_format = "pem"
 
-  tags = concat(local.common_tags_list, [{ key = "Name", value = "EVS-WS-KeyPair" }])
+  tags = concat(local.common_tags_list, [{ key = "Name", value = "EVS-WS-KeyPair-${random_id.evs_key_suffix.hex}" }])
 }

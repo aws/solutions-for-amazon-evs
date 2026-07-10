@@ -182,7 +182,7 @@ Phase 2 reads these directly from `terraform.tfstate` via the `pre-evs-sync-conf
 | `terraform apply` deploys to wrong region | Ran with placeholder tfvars | Edit `terraform.tfvars`, then `terraform destroy` + re-apply |
 | Subnet conflicts on apply | Reusing a VPC with existing subnets | Delete conflicting subnets manually, or use a fresh VPC |
 | Jumpbox password not available | Takes 4-10 min after first launch | Wait and retry `aws ec2 get-password-data` |
-| `key pair ... already exists (AlreadyExists)` | Key pair from prior run still exists in EC2 | Delete the key pair: `aws ec2 delete-key-pair --key-name <name> --region <region>`, then re-apply. Or import it: `terraform import module.base_aws_infrastructure.awscc_ec2_key_pair.evs <key-pair-id>` |
+| `key pair ... already exists (AlreadyExists)` | Key pair names include a random hex suffix (e.g. `EVS-WS-KeyPair-a1b2c3d4`) generated at apply time. This error means a key pair with that name already exists, which can happen if Terraform state was lost or if the same state file is applied twice. Delete the conflicting key pair: `aws ec2 delete-key-pair --key-name <name> --region <region>`, then re-apply. Or import it: `terraform import module.base_aws_infrastructure.awscc_ec2_key_pair.evs <key-pair-id>` |
 | `Route Server is not associated with a VPC (InvalidRequest)` | Route Server propagation attempted before VPC association completes | Re-run `terraform apply` — the association will complete on retry. If persistent, check Route Server state in console |
 | `terraform destroy` hangs on Route Server | AWS dependency ordering | Delete Route Server peers first via console, then retry destroy |
 

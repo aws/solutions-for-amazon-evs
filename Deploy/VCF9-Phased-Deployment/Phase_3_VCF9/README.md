@@ -271,9 +271,12 @@ deployment** — it chains all Phase 3 stages in order:
    touch the wrong volume. ~30 sec.
 5. **`deploy-edge-cluster`** — run all 7 NSX edge stages in order.
    ~30-50 min.
-6. **`create-connector`** — register the VCF Operations Manager
-   connector with EVS via `CreateEnvironmentConnector`. Polls until
-   ACTIVE. ~2-5 min.
+6. **`create-connector --wait`** — register the VCF Operations Manager
+   connector with EVS via `CreateEnvironmentConnector`, then poll until
+   it reaches `ACTIVE`. ~2-5 min.
+
+On success, `deploy-vcf-and-edge` prints an explicit
+`deployment successful` message once the connector is `ACTIVE`.
 
 Total runtime: **~3-5 hours**, dominated by step 2 (bringup).
 
