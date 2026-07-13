@@ -1519,6 +1519,9 @@ def _handle_pipeline(args: argparse.Namespace) -> int:
     ``--wait`` flag — there's no point starting bringup and then
     immediately failing into edge-cluster work that needs vCenter / NSX
     to be up.
+
+    On success the pipeline prints an explicit "deployment successful"
+    message.
     """
     # Validate every required input upfront so we don't burn 30 minutes
     # on prepare-depot just to fail at deploy-edge-cluster for a missing
@@ -1652,11 +1655,22 @@ def _handle_pipeline(args: argparse.Namespace) -> int:
         return rc
 
     # Step 6: create-connector. Register Ops Manager with EVS.
-    logger.info("deploy-vcf-and-edge 6/6: create-connector")
+    logger.info("deploy-vcf-and-edge 6/6: create-connector --wait")
     args.action = "create-connector"
+    original_wait = args.wait
+    args.wait = True
     rc = create_ops_manager_connector(args)
+    args.wait = original_wait
     args.action = original_action
-    return rc
+    if rc != 0:
+        logger.error("deploy-vcf-and-edge FAILED at step 6/6 (create-connector)")
+        return rc
+
+    logger.info(
+        "deploy-vcf-and-edge: deployment successful — VCF 9 bringup, "
+        "edge cluster, and Operations Manager connector are all complete."
+    )
+    return 0
 
 
 def _handle_edge(args: argparse.Namespace) -> int:
