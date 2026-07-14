@@ -146,7 +146,7 @@ output "vcf_hostnames" {
 
 output "esxi_hostnames" {
   description = "Short hostnames for ESXi hosts (in provisioning order)"
-  value       = [var.esxi01_name, var.esxi02_name, var.esxi03_name]
+  value       = [var.esxi01_name, var.esxi02_name, var.esxi03_name, var.esxi04_name]
 }
 
 ###############################################################################

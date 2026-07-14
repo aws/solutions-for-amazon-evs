@@ -16,6 +16,7 @@ variable "cidr_prefix" {
 variable "esxi01_name" { type = string }
 variable "esxi02_name" { type = string }
 variable "esxi03_name" { type = string }
+variable "esxi04_name" { type = string }
 variable "vc_name" { type = string }
 variable "nsx_name" { type = string }
 variable "sddcm_name" { type = string }

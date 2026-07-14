@@ -37,6 +37,7 @@ locals {
     esxi01            = { hostname = var.esxi01_name, ip_suffix = "10.11" }
     esxi02            = { hostname = var.esxi02_name, ip_suffix = "10.12" }
     esxi03            = { hostname = var.esxi03_name, ip_suffix = "10.13" }
+    esxi04            = { hostname = var.esxi04_name, ip_suffix = "10.14" }
     vcenter           = { hostname = var.vc_name, ip_suffix = "60.10" }
     nsx_mgr           = { hostname = var.nsx_name, ip_suffix = "60.11" }
     sddcm             = { hostname = var.sddcm_name, ip_suffix = "60.12" }

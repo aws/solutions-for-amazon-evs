@@ -61,6 +61,7 @@ module "base_aws_infrastructure" {
   esxi01_name            = var.esxi01_name
   esxi02_name            = var.esxi02_name
   esxi03_name            = var.esxi03_name
+  esxi04_name            = var.esxi04_name
   vc_name                = var.vc_name
   nsx_name               = var.nsx_name
   sddcm_name             = var.sddcm_name
