@@ -1,0 +1,77 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ec2:*Vpc*",
+        "ec2:*Subnet*",
+        "ec2:*Route*",
+        "ec2:*Gateway*",
+        "ec2:*Address*",
+        "ec2:*Dhcp*",
+        "ec2:*SecurityGroup*",
+        "ec2:*Interface*",
+        "ec2:*Acl*",
+        "ec2:*Ipam*",
+        "ec2:*KeyPair*",
+        "ec2:*Instance*",
+        "ec2:*Volume*",
+        "ec2:*Image*",
+        "ec2:*Tags*",
+        "ec2:DescribeAvailabilityZones",
+        "ec2:DescribeAccountAttributes",
+        "ec2:GetPasswordData",
+        "route53:*HostedZone*",
+        "route53:*ResourceRecordSets",
+        "route53:GetChange",
+        "route53:*Tags*",
+        "route53resolver:*ResolverEndpoint*",
+        "route53resolver:*Tag*",
+        "cloudformation:*Resource*",
+        "evs:*",
+        "ssm:DescribeParameters",
+        "secretsmanager:GetRandomPassword"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ssm:*Parameter",
+        "ssm:*Tags*"
+      ],
+      "Resource": "arn:aws:ssm:*:*:parameter/ec2/keypair/*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "sns:*Topic",
+      "Resource": "arn:aws:sns:*:*:RouteServer*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:*Secret*",
+        "secretsmanager:*Tag*"
+      ],
+      "Resource": [
+        "arn:aws:secretsmanager:*:*:secret:evs-*",
+        "arn:aws:secretsmanager:*:*:secret:evs!*"
+      ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": "iam:CreateServiceLinkedRole",
+      "Resource": "arn:aws:iam::*:role/aws-service-role/*",
+      "Condition": {
+        "StringLike": {
+          "iam:AWSServiceName": [
+            "route-server.ec2.amazonaws.com",
+            "evs.amazonaws.com",
+            "transitgateway.amazonaws.com"
+          ]
+        }
+      }
+    }
+  ]
+}
