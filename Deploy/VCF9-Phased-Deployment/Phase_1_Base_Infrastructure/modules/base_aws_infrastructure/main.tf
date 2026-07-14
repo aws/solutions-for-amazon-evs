@@ -6,9 +6,22 @@
 ###############################################################################
 
 locals {
-  cidr_octets  = split(".", var.cidr_prefix)
+  # Parse the VPC CIDR block into its components
+  cidr_parts      = split("/", var.cidr_prefix)
+  network_addr    = local.cidr_parts[0]
+  cidr_mask       = tonumber(local.cidr_parts[1])
+  subnet_newbits  = 24 - local.cidr_mask
+
+  cidr_octets  = split(".", local.network_addr)
   cidr_octet_0 = local.cidr_octets[0]
   cidr_octet_1 = local.cidr_octets[1]
+
+  # Two-octet prefix for DNS record IP computation
+  ip_prefix = "${local.cidr_octet_0}.${local.cidr_octet_1}."
+
+  # Derived subnet CIDRs
+  service_access_cidr = cidrsubnet(var.cidr_prefix, local.subnet_newbits, 0)
+  public_cidr         = cidrsubnet(var.cidr_prefix, local.subnet_newbits, 1)
 
   common_tags = {
     Environment = var.environment
@@ -68,7 +81,7 @@ locals {
 
 resource "aws_vpc" "underlay" {
 
-  cidr_block           = "${var.cidr_prefix}0.0/16"
+  cidr_block           = var.cidr_prefix
   enable_dns_hostnames = true
   enable_dns_support   = true
   instance_tenancy     = "default"
@@ -78,7 +91,7 @@ resource "aws_vpc" "underlay" {
 
 resource "aws_vpc_dhcp_options" "evs" {
   domain_name         = var.fqdn
-  domain_name_servers = ["${var.cidr_prefix}0.100", "${var.cidr_prefix}0.101"]
+  domain_name_servers = [cidrhost(local.service_access_cidr, 100), cidrhost(local.service_access_cidr, 101)]
   ntp_servers         = ["169.254.169.123"]
 
   tags = merge(local.common_tags, { Name = "EVS-DHCP-OpsSet" })
@@ -94,7 +107,7 @@ resource "aws_vpc_dhcp_options_association" "evs" {
 resource "aws_subnet" "service_access" {
   vpc_id            = aws_vpc.underlay.id
   availability_zone = var.availability_zone
-  cidr_block        = "${var.cidr_prefix}0.0/24"
+  cidr_block        = local.service_access_cidr
 
   tags = merge(local.common_tags, { Name = "EVS-Service-Access-Subnet" })
 }
@@ -114,7 +127,7 @@ resource "aws_route_table_association" "service_access" {
 resource "aws_subnet" "public" {
   vpc_id                  = aws_vpc.underlay.id
   availability_zone       = var.availability_zone
-  cidr_block              = "${var.cidr_prefix}5.0/24"
+  cidr_block              = local.public_cidr
   map_public_ip_on_launch = true
 
   tags = merge(local.common_tags, { Name = "Public-Access-Subnet" })
@@ -190,7 +203,7 @@ resource "aws_route53_record" "forward" {
   name    = "${each.value.hostname}.${var.fqdn}"
   type    = "A"
   ttl     = 300
-  records = ["${var.cidr_prefix}${each.value.ip_suffix}"]
+  records = ["${local.ip_prefix}${each.value.ip_suffix}"]
 }
 
 ###############################################################################
@@ -265,12 +278,12 @@ resource "aws_route53_resolver_endpoint" "inbound" {
 
   ip_address {
     subnet_id = aws_subnet.service_access.id
-    ip        = "${var.cidr_prefix}0.100"
+    ip        = cidrhost(local.service_access_cidr, 100)
   }
 
   ip_address {
     subnet_id = aws_subnet.service_access.id
-    ip        = "${var.cidr_prefix}0.101"
+    ip        = cidrhost(local.service_access_cidr, 101)
   }
 
   depends_on = [aws_subnet.service_access]

@@ -9,7 +9,10 @@ variable "environment" {
 }
 variable "availability_zone" { type = string }
 variable "fqdn" { type = string }
-variable "cidr_prefix" { type = string }
+variable "cidr_prefix" {
+  type        = string
+  description = "VPC CIDR block in address/mask notation (e.g. '10.0.0.0/16' or '10.28.32.0/20')"
+}
 variable "esxi01_name" { type = string }
 variable "esxi02_name" { type = string }
 variable "esxi03_name" { type = string }

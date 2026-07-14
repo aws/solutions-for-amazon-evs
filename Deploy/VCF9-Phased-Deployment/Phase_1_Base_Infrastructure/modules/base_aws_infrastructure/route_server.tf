@@ -41,7 +41,7 @@ resource "awscc_ec2_route_server_peer" "peer01" {
     peer_asn                = 65000
     peer_liveness_detection = "bgp-keepalive"
   }
-  peer_address             = "${var.cidr_prefix}80.10"
+  peer_address             = "${local.ip_prefix}80.10"
   route_server_endpoint_id = awscc_ec2_route_server_endpoint.ep01.route_server_endpoint_id
 
   tags = concat(local.common_tags_list, [{ key = "Name", value = "EVS-RouteServer-Peer01" }])
@@ -52,7 +52,7 @@ resource "awscc_ec2_route_server_peer" "peer02" {
     peer_asn                = 65000
     peer_liveness_detection = "bgp-keepalive"
   }
-  peer_address             = "${var.cidr_prefix}80.11"
+  peer_address             = "${local.ip_prefix}80.11"
   route_server_endpoint_id = awscc_ec2_route_server_endpoint.ep02.route_server_endpoint_id
 
   tags = concat(local.common_tags_list, [{ key = "Name", value = "EVS-RouteServer-Peer02" }])
