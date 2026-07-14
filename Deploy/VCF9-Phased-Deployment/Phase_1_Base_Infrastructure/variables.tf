@@ -26,8 +26,8 @@ variable "fqdn" {
 
 variable "cidr_prefix" {
   type        = string
-  default     = "10.0."
-  description = "Base CIDR prefix for the underlay VPC (e.g. '10.0.')"
+  default     = "10.0.0.0/16"
+  description = "VPC CIDR block in address/mask notation (e.g. '10.0.0.0/16' or '10.28.32.0/20')"
 }
 
 variable "esxi01_name" {

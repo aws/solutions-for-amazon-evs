@@ -1,7 +1,7 @@
 region            = "us-east-1"
 availability_zone = "us-east-1a"
 fqdn              = "my.fqdn.evs"
-cidr_prefix       = "10.0."
+cidr_prefix       = "10.0.0.0/16"
 
 # Tag every AWS resource with this Environment tag (e.g., dev, staging, prod).
 # Defaults to "dev" when omitted.

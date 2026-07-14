@@ -33,6 +33,17 @@ provider "awscc" {
 }
 
 ###############################################################################
+# Locals – subnet arithmetic for the jumpbox
+###############################################################################
+
+locals {
+  vpc_cidr_mask      = tonumber(split("/", var.cidr_prefix)[1])
+  subnet_newbits     = 24 - local.vpc_cidr_mask
+  max_subnet_index   = pow(2, local.subnet_newbits) - 1
+  jumpbox_subnet_idx = min(200, local.max_subnet_index)
+}
+
+###############################################################################
 # Module 1: EVS Networking
 ###############################################################################
 
@@ -95,7 +106,7 @@ module "jumpbox" {
   internet_gateway_id           = module.base_aws_infrastructure.internet_gateway_id
   environment                   = var.environment
   availability_zone             = var.availability_zone
-  subnet_cidr                   = "${var.cidr_prefix}200.0/24"
+  subnet_cidr                   = cidrsubnet(var.cidr_prefix, local.subnet_newbits, local.jumpbox_subnet_idx)
   instance_type                 = var.jumpbox_instance_type
 }
 
