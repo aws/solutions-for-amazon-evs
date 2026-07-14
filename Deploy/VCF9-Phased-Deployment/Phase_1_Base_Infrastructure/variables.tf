@@ -48,6 +48,12 @@ variable "esxi03_name" {
   description = "DNS name for esxi03"
 }
 
+variable "esxi04_name" {
+  type        = string
+  default     = "esxi04"
+  description = "DNS name for esxi04"
+}
+
 variable "vc_name" {
   type        = string
   default     = "vc"
