@@ -1,0 +1,6 @@
+requests==2.34.2
+urllib3==2.7.0
+pyvmomi==9.1.0.0
+vcf-installer==9.1.0.0
+vcf-nsx==9.1.0.0
+boto3==1.43.39

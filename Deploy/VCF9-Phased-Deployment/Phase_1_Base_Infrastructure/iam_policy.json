@@ -1,0 +1,322 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "VPCNetworking",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateVpc",
+        "ec2:DeleteVpc",
+        "ec2:DescribeVpcs",
+        "ec2:ModifyVpcAttribute",
+        "ec2:CreateSubnet",
+        "ec2:DeleteSubnet",
+        "ec2:DescribeSubnets",
+        "ec2:ModifySubnetAttribute",
+        "ec2:CreateRouteTable",
+        "ec2:DeleteRouteTable",
+        "ec2:DescribeRouteTables",
+        "ec2:CreateRoute",
+        "ec2:DeleteRoute",
+        "ec2:AssociateRouteTable",
+        "ec2:DisassociateRouteTable",
+        "ec2:CreateInternetGateway",
+        "ec2:DeleteInternetGateway",
+        "ec2:AttachInternetGateway",
+        "ec2:DetachInternetGateway",
+        "ec2:DescribeInternetGateways",
+        "ec2:AllocateAddress",
+        "ec2:ReleaseAddress",
+        "ec2:DescribeAddresses",
+        "ec2:DescribeAddressesAttribute",
+        "ec2:DisassociateAddress",
+        "ec2:CreateNatGateway",
+        "ec2:DeleteNatGateway",
+        "ec2:DescribeNatGateways",
+        "ec2:CreateDhcpOptions",
+        "ec2:DeleteDhcpOptions",
+        "ec2:AssociateDhcpOptions",
+        "ec2:DescribeDhcpOptions",
+        "ec2:DescribeSecurityGroups",
+        "ec2:CreateSecurityGroup",
+        "ec2:DeleteSecurityGroup",
+        "ec2:AuthorizeSecurityGroupIngress",
+        "ec2:AuthorizeSecurityGroupEgress",
+        "ec2:RevokeSecurityGroupIngress",
+        "ec2:RevokeSecurityGroupEgress",
+        "ec2:DescribeAvailabilityZones",
+        "ec2:DescribeAccountAttributes",
+        "ec2:DescribeNetworkInterfaces",
+        "ec2:CreateNetworkInterface",
+        "ec2:CreateNetworkInterfacePermission",
+        "ec2:DeleteNetworkInterface",
+        "ec2:ModifyNetworkInterfaceAttribute",
+        "ec2:DescribeVpcAttribute",
+        "ec2:CreateTags",
+        "ec2:DeleteTags",
+        "ec2:DescribeTags",
+        "ec2:AssociateVpcCidrBlock",
+        "ec2:DisassociateVpcCidrBlock"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "PublicHcxIpam",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateIpam",
+        "ec2:DeleteIpam",
+        "ec2:DescribeIpams",
+        "ec2:ModifyIpam",
+        "ec2:CreateIpamPool",
+        "ec2:DeleteIpamPool",
+        "ec2:DescribeIpamPools",
+        "ec2:ModifyIpamPool",
+        "ec2:ProvisionIpamPoolCidr",
+        "ec2:DeprovisionIpamPoolCidr",
+        "ec2:GetIpamPoolCidrs",
+        "ec2:AllocateIpamPoolCidr",
+        "ec2:ReleaseIpamPoolAllocation",
+        "ec2:GetIpamPoolAllocations",
+        "ec2:DescribeIpamScopes",
+        "ec2:CreateIpamScope",
+        "ec2:DeleteIpamScope"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "PublicHcxNetworkAcl",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateNetworkAcl",
+        "ec2:DeleteNetworkAcl",
+        "ec2:DescribeNetworkAcls",
+        "ec2:CreateNetworkAclEntry",
+        "ec2:DeleteNetworkAclEntry",
+        "ec2:ReplaceNetworkAclEntry",
+        "ec2:ReplaceNetworkAclAssociation"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "TransitGateway",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateTransitGateway",
+        "ec2:DeleteTransitGateway",
+        "ec2:DescribeTransitGateways",
+        "ec2:ModifyTransitGateway",
+        "ec2:CreateTransitGatewayVpcAttachment",
+        "ec2:DeleteTransitGatewayVpcAttachment",
+        "ec2:DescribeTransitGatewayVpcAttachments",
+        "ec2:ModifyTransitGatewayVpcAttachment",
+        "ec2:DescribeTransitGatewayAttachments",
+        "ec2:GetTransitGatewayRouteTableAssociations",
+        "ec2:DescribeTransitGatewayRouteTables",
+        "ec2:AssociateTransitGatewayRouteTable",
+        "ec2:DisassociateTransitGatewayRouteTable",
+        "ec2:GetTransitGatewayRouteTablePropagations",
+        "ec2:EnableTransitGatewayRouteTablePropagation",
+        "ec2:DisableTransitGatewayRouteTablePropagation"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "EC2KeyPair",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateKeyPair",
+        "ec2:DeleteKeyPair",
+        "ec2:DescribeKeyPairs"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "SSMKeyPairParameters",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:PutParameter",
+        "ssm:DeleteParameter",
+        "ssm:GetParameter",
+        "ssm:AddTagsToResource",
+        "ssm:RemoveTagsFromResource",
+        "ssm:ListTagsForResource"
+      ],
+      "Resource": "arn:aws:ssm:*:*:parameter/ec2/keypair/*"
+    },
+    {
+      "Sid": "SSMDescribeParameters",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:DescribeParameters"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "Route53HostedZones",
+      "Effect": "Allow",
+      "Action": [
+        "route53:CreateHostedZone",
+        "route53:DeleteHostedZone",
+        "route53:GetHostedZone",
+        "route53:ListHostedZones",
+        "route53:ChangeResourceRecordSets",
+        "route53:ListResourceRecordSets",
+        "route53:GetChange",
+        "route53:AssociateVPCWithHostedZone",
+        "route53:DisassociateVPCFromHostedZone",
+        "route53:ChangeTagsForResource",
+        "route53:ListTagsForResource"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "Route53Resolver",
+      "Effect": "Allow",
+      "Action": [
+        "route53resolver:CreateResolverEndpoint",
+        "route53resolver:DeleteResolverEndpoint",
+        "route53resolver:GetResolverEndpoint",
+        "route53resolver:ListResolverEndpoints",
+        "route53resolver:ListResolverEndpointIpAddresses",
+        "route53resolver:TagResource",
+        "route53resolver:UntagResource",
+        "route53resolver:ListTagsForResource"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "RouteServerSNS",
+      "Effect": "Allow",
+      "Action": [
+        "sns:CreateTopic",
+        "sns:DeleteTopic"
+      ],
+      "Resource": "arn:aws:sns:*:*:RouteServer*"
+    },
+    {
+      "Sid": "RouteServer",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateRouteServer",
+        "ec2:DeleteRouteServer",
+        "ec2:DescribeRouteServers",
+        "ec2:ModifyRouteServer",
+        "ec2:GetRouteServerAssociations",
+        "ec2:GetRouteServerPropagations",
+        "ec2:CreateRouteServerEndpoint",
+        "ec2:DeleteRouteServerEndpoint",
+        "ec2:DescribeRouteServerEndpoints",
+        "ec2:CreateRouteServerPeer",
+        "ec2:DeleteRouteServerPeer",
+        "ec2:DescribeRouteServerPeers",
+        "ec2:AssociateRouteServer",
+        "ec2:DisassociateRouteServer",
+        "ec2:EnableRouteServerPropagation",
+        "ec2:DisableRouteServerPropagation"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "EVS",
+      "Effect": "Allow",
+      "Action": [
+        "evs:CreateEnvironment",
+        "evs:DeleteEnvironment",
+        "evs:GetEnvironment",
+        "evs:ListEnvironments",
+        "evs:CreateEnvironmentHost",
+        "evs:DeleteEnvironmentHost",
+        "evs:ListEnvironmentHosts",
+        "evs:ListEnvironmentVlans",
+        "evs:AssociateEipToVlan",
+        "evs:DisassociateEipFromVlan",
+        "evs:TagResource",
+        "evs:UntagResource",
+        "evs:ListTagsForResource",
+        "ec2:GetAllowedImagesSettings"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ServiceLinkedRoles",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateServiceLinkedRole"
+      ],
+      "Resource": "arn:aws:iam::*:role/aws-service-role/*",
+      "Condition": {
+        "StringLike": {
+          "iam:AWSServiceName": [
+            "route-server.ec2.amazonaws.com",
+            "evs.amazonaws.com",
+            "transitgateway.amazonaws.com"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "JumpboxEC2Instance",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:RunInstances",
+        "ec2:TerminateInstances",
+        "ec2:StartInstances",
+        "ec2:StopInstances",
+        "ec2:DescribeInstances",
+        "ec2:DescribeInstanceAttribute",
+        "ec2:DescribeInstanceStatus",
+        "ec2:DescribeInstanceTypes",
+        "ec2:ModifyInstanceAttribute",
+        "ec2:DescribeImages",
+        "ec2:ImportKeyPair",
+        "ec2:CreateVolume",
+        "ec2:DeleteVolume",
+        "ec2:DescribeVolumes",
+        "ec2:AttachVolume",
+        "ec2:DetachVolume",
+        "ec2:ModifyVolume",
+        "ec2:DescribeInstanceCreditSpecifications",
+        "ec2:GetPasswordData"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "CloudControlAPI",
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:GetResource",
+        "cloudformation:CreateResource",
+        "cloudformation:DeleteResource",
+        "cloudformation:UpdateResource",
+        "cloudformation:ListResources",
+        "cloudformation:GetResourceRequestStatus"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "SecretsManager",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:CreateSecret",
+        "secretsmanager:DeleteSecret",
+        "secretsmanager:DescribeSecret",
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:PutSecretValue",
+        "secretsmanager:TagResource"
+      ],
+      "Resource": [
+        "arn:aws:secretsmanager:*:*:secret:evs-*",
+        "arn:aws:secretsmanager:*:*:secret:evs!*"
+      ]
+    },
+    {
+      "Sid": "SecretsManagerGetRandomPassword",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:GetRandomPassword"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
