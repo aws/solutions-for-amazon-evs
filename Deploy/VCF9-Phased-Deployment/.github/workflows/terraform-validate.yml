@@ -1,0 +1,33 @@
+name: Terraform validate
+
+on:
+  pull_request:
+    paths:
+      - 'Phase_1_Base_Infrastructure/**/*.tf'
+      - 'Phase_1_Base_Infrastructure/**/*.tfvars.example'
+  push:
+    paths:
+      - 'Phase_1_Base_Infrastructure/**/*.tf'
+      - 'Phase_1_Base_Infrastructure/**/*.tfvars.example'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.9'
+
+      - name: Terraform fmt check
+        working-directory: Phase_1_Base_Infrastructure
+        run: terraform fmt -check -recursive
+
+      - name: Terraform init
+        working-directory: Phase_1_Base_Infrastructure
+        run: terraform init -backend=false
+
+      - name: Terraform validate
+        working-directory: Phase_1_Base_Infrastructure
+        run: terraform validate
