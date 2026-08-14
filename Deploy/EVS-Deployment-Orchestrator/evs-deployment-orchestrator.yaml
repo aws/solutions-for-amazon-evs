@@ -1,0 +1,941 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Amazon EVS Deployment Orchestrator. Creates a runner instance that preflights
+  your account, downloads your blueprint, and deploys a complete VCF environment
+  on EVS unattended — expect about 4-6 hours end to end. Requires a blueprint,
+  VCF Installer OVA, and ovftool — all referenced by S3 URI (see the blueprints/
+  folder). Networking, DNS, Route Server, the EVS environment, and VCF bringup
+  are all handled by the orchestrator. Set a notification topic below to get
+  progress by email. Tear down with destroy.py (see the DestroyCommand output)
+  rather than deleting this stack, so the bare-metal hosts are released.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: {default: "Required"}
+        Parameters: [BlueprintKey, OvaKey, OvfKey, DepotSecretName, AvailabilityZone]
+      - Label: {default: "Notifications (recommended)"}
+        Parameters: [SnsTopicArn]
+      - Label: {default: "Optional - SSH access (fallback for manual resume/destroy)"}
+        Parameters: [KeyPairName]
+      - Label: {default: "Optional - networking"}
+        Parameters: [CidrPrefix]
+      - Label: {default: "Optional - runner sizing"}
+        Parameters: [RunnerInstanceType]
+      - Label: {default: "Optional - bring your own VPC"}
+        Parameters: [ExistingVpcId, ExistingRunnerSubnetId, ExistingServiceAccessSubnetId, ExistingServiceAccessRouteTableId, ExistingPublicSubnetId]
+    ParameterLabels:
+      BlueprintKey: {default: "Blueprint S3 URI"}
+      OvaKey: {default: "VCF Installer OVA S3 URI"}
+      OvfKey: {default: "ovftool S3 URI"}
+      AvailabilityZone: {default: "Availability Zone"}
+      SnsTopicArn: {default: "Notification SNS topic ARN"}
+      KeyPairName: {default: "EC2 key pair (for SSH fallback)"}
+      CidrPrefix: {default: "CIDR prefix (first two octets)"}
+      DepotSecretName: {default: "Broadcom depot secret name"}
+      RunnerInstanceType: {default: "Runner instance type"}
+      ExistingVpcId: {default: "Existing VPC ID"}
+      ExistingRunnerSubnetId: {default: "Existing runner subnet ID"}
+      ExistingServiceAccessSubnetId: {default: "Existing service-access subnet ID"}
+      ExistingServiceAccessRouteTableId: {default: "Existing service-access route table ID"}
+      ExistingPublicSubnetId: {default: "Existing public subnet ID"}
+
+Rules:
+  ByoVpcRequiresSubnets:
+    RuleCondition: !Not [!Equals [!Ref ExistingVpcId, ""]]
+    Assertions:
+      - Assert: !And
+          - !Not [!Equals [!Ref ExistingRunnerSubnetId, ""]]
+          - !Not [!Equals [!Ref ExistingServiceAccessSubnetId, ""]]
+          - !Not [!Equals [!Ref ExistingServiceAccessRouteTableId, ""]]
+          - !Not [!Equals [!Ref ExistingPublicSubnetId, ""]]
+        AssertDescription: >-
+          BYO-VPC mode (ExistingVpcId set) requires all four of
+          ExistingRunnerSubnetId, ExistingServiceAccessSubnetId,
+          ExistingServiceAccessRouteTableId, and ExistingPublicSubnetId. The
+          orchestrator's aws_config stage needs the route table (NAT default
+          route + Route Server propagation target) and public subnet (NAT
+          gateway placement) just as much as it needs the two subnets - all
+          four are required together, not optional extras.
+Parameters:
+  BlueprintKey:
+    Type: String
+    AllowedPattern: '^s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/.+$'
+    ConstraintDescription: must be a full S3 URI, e.g. s3://my-bucket/path/blueprint.yaml
+    Description: >-
+      Full S3 URI of your blueprint (orchestrator config), e.g.
+      s3://my-bucket/path/blueprint.yaml - NOT just a bucket name or key.
+      Required - see the blueprints/ folder for the field reference.
+     
+  OvaKey:
+    Type: String
+    AllowedPattern: '^s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/.+$'
+    ConstraintDescription: must be a full S3 URI, e.g. s3://my-bucket/path/installer.ova
+    Description: >-
+      Full S3 URI of the VCF SDDC Manager OVA — download it from the Broadcom
+      Support Portal (https://support.broadcom.com) under your VCF entitlement.
+      Supported VCF versions: 9.0.2 and 9.1.0 (the OVA version MUST match
+      evs.vcf_version in your blueprint), e.g.
+      s3://my-bucket/path/VCF-SDDC-Manager-Appliance-9.1.0.0.xxxxx.ova - NOT
+      just a bucket name or key.
+  OvfKey:
+    Type: String
+    AllowedPattern: '^s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/.+$'
+    ConstraintDescription: must be a full S3 URI, e.g. s3://my-bucket/path/ovftool.zip
+    Description: >-
+      Full S3 URI of the Linux VMware ovftool zip (not the Windows .msi - the
+      runner is Linux) - download it from the Broadcom Support Portal
+      (https://support.broadcom.com), e.g.
+      s3://my-bucket/path/VMware-ovftool-4.6.3-lin.x86_64.zip - NOT just a
+      bucket name or key.
+  DepotSecretName:
+    Type: String
+    Default: "evs-depot-token"
+    Description: >-
+      Name of the Secrets Manager secret holding your Broadcom depot token. The
+      secret itself is required — the default below is only the name this
+      template looks for, so change it if you named yours differently. Can be
+      any name: the runner IAM policy is scoped to this specific
+      secret plus evs-* (for orchestrator-created secrets during deployment).
+      Must match the depot_token_secret value in your blueprint.
+  CidrPrefix:
+    Type: String
+    Default: "10.20."
+    AllowedPattern: '^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){2}$'
+    ConstraintDescription: 'first two octets with trailing dot, e.g. "10.20."'
+    Description: >-
+      First two octets of the /16 network, with trailing dot (e.g. "10.20.").
+      Injected into the blueprint automatically.
+  RunnerInstanceType:
+    Type: String
+    Default: "t3.large"
+    Description: >-
+      Runner instance type. t3.large (8 GB) recommended - smaller sizes have
+      OOM-killed the orchestrator during the multi-GB OVA deploy.
+  AvailabilityZone:
+    Type: String
+    AllowedPattern: '^[a-z]{2}-[a-z]+-\d[a-z]$'
+    ConstraintDescription: must be a valid Availability Zone, e.g. us-east-2a
+    Description: >-
+      Required. The Availability Zone for the EVS environment — all
+      bare-metal hosts, subnets, and the runner instance land here (EVS is
+      single-AZ). Must offer the instance type configured in your blueprint.
+  SnsTopicArn:
+    Type: String
+    Default: ""
+    AllowedPattern: '^$|^arn:aws[a-zA-Z-]*:sns:[a-z0-9-]+:\d{12}:[a-zA-Z0-9_-]+$'
+    ConstraintDescription: a valid SNS topic ARN (or empty)
+    Description: >-
+      Optional but recommended. ARN of an SNS topic you own. The deployment
+      publishes progress to it: when it starts, after EACH stage completes,
+      at least every 2 hours during long stages (bare-metal host creation and
+      VCF bringup), and on final success or failure. Every message is prefixed
+      with this stack's name so multiple runs on one topic stay
+      distinguishable. Subscribe an email/SMS/chat endpoint to actually
+      receive them. New to SNS (how to create a topic + subscription)? See
+      https://docs.aws.amazon.com/sns/latest/dg/sns-getting-started.html .
+      Leave empty to skip notifications. If the topic uses a customer-managed
+      KMS key, grant the runner role kms:GenerateDataKey and kms:Decrypt on it.
+  KeyPairName:
+    Type: String
+    Default: ""
+    Description: >-
+      Optional. Name of an existing EC2 key pair for SSH access to the
+      runner (and RDP to the optional Windows jumpbox, if enabled — see
+      jumpbox.enabled in the blueprint). Leave empty to auto-create a key
+      pair (private key stored in SSM Parameter Store). Note: no port
+      22/3389 ingress rule is created either way — add one to the
+      relevant security group yourself after the stack is up.
+  ExistingVpcId:
+    Type: String
+    Default: ""
+    Description: >-
+      Optional (BYO-VPC). Existing VPC ID. Leave empty to create a new VPC.
+      If set, all four are required together: ExistingRunnerSubnetId,
+      ExistingServiceAccessSubnetId, ExistingServiceAccessRouteTableId, and
+      ExistingPublicSubnetId. The runner subnet must provide outbound internet access.
+  ExistingRunnerSubnetId:
+    Type: String
+    Default: ""
+    Description: >-
+      Required (BYO-VPC only, i.e. when ExistingVpcId is set). Existing subnet
+      for the runner instance. Must provide outbound internet access — the
+      runner downloads the orchestrator, the OVA, and VCF bundles.
+  ExistingServiceAccessSubnetId:
+    Type: String
+    Default: ""
+    Description: >-
+      Required (BYO-VPC only, i.e. when ExistingVpcId is set). Existing
+      service-access subnet for EVS. Must be in the AvailabilityZone set above,
+      since EVS is single-AZ.
+  ExistingServiceAccessRouteTableId:
+    Type: String
+    Default: ""
+    Description: >-
+      Required (BYO-VPC only, i.e. when ExistingVpcId is set). Route table
+      associated with the existing service-access subnet - the aws_config
+      stage needs this for the NAT default route and Route Server
+      propagation target.
+  ExistingPublicSubnetId:
+    Type: String
+    Default: ""
+    Description: >-
+      Required (BYO-VPC only, i.e. when ExistingVpcId is set). Existing
+      public subnet for the NAT gateway the aws_config stage creates.
+
+Conditions:
+  CreateNetwork: !Equals [!Ref ExistingVpcId, ""]
+  CreateNotifications: !Not [!Equals [!Ref SnsTopicArn, ""]]
+  CreateRunnerKeyPair: !Equals [!Ref KeyPairName, ""]
+
+Resources:
+
+  # ---------------------------------------------------------------- network
+  Vpc:
+    Type: AWS::EC2::VPC
+    Condition: CreateNetwork
+    Properties:
+      CidrBlock: !Sub "${CidrPrefix}0.0/16"
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags: [{Key: Name, Value: !Sub "${AWS::StackName}-vpc"}]
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Condition: CreateNetwork
+    Properties:
+      Tags: [{Key: Name, Value: !Sub "${AWS::StackName}-igw"}]
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Condition: CreateNetwork
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Condition: CreateNetwork
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Sub "${CidrPrefix}5.0/24"
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Ref AvailabilityZone
+      Tags: [{Key: Name, Value: !Sub "${AWS::StackName}-public"}]
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Condition: CreateNetwork
+    Properties:
+      VpcId: !Ref Vpc
+      Tags: [{Key: Name, Value: !Sub "${AWS::StackName}-public-rt"}]
+
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    Condition: CreateNetwork
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: CreateNetwork
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  ServiceAccessSubnet:
+    Type: AWS::EC2::Subnet
+    Condition: CreateNetwork
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Sub "${CidrPrefix}0.0/24"
+      AvailabilityZone: !Ref AvailabilityZone
+      Tags: [{Key: Name, Value: !Sub "${AWS::StackName}-service-access"}]
+
+  ServiceAccessRouteTable:
+    Type: AWS::EC2::RouteTable
+    Condition: CreateNetwork
+    Properties:
+      VpcId: !Ref Vpc
+      Tags: [{Key: Name, Value: !Sub "${AWS::StackName}-service-access-rt"}]
+
+  ServiceAccessSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: CreateNetwork
+    Properties:
+      SubnetId: !Ref ServiceAccessSubnet
+      RouteTableId: !Ref ServiceAccessRouteTable
+
+  # ------------------------------------------------------------------- IAM
+  RunnerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ec2.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+        # Required: EVS CreateEnvironment checks the caller has support:* IAM
+        # permissions (not just account billing state), so without this it rejects
+        # with "must be subscribed to Premium Support" even on a Business-support account.
+        - arn:aws:iam::aws:policy/AWSSupportAccess
+      Policies:
+        - PolicyName: evs-orchestrator
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: EVSAll
+                Effect: Allow
+                Action: ["evs:*"]
+                Resource: "*"
+              - Sid: EC2ForEvsFasAndOrchestrator
+                Effect: Allow
+                Action:
+                  - ec2:CreateSubnet
+                  - ec2:DeleteSubnet
+                  - ec2:ModifySubnetAttribute
+                  - ec2:RunInstances
+                  - ec2:TerminateInstances
+                  - ec2:ModifyInstanceAttribute
+                  - ec2:CreateTags
+                  - ec2:DeleteTags
+                  - ec2:Describe*
+                  - ec2:CreateNetworkInterface
+                  - ec2:DeleteNetworkInterface
+                  - ec2:AttachNetworkInterface
+                  - ec2:DetachNetworkInterface
+                  - ec2:ModifyNetworkInterfaceAttribute
+                  - ec2:CreateNetworkInterfacePermission
+                  - ec2:AssignPrivateIpAddresses
+                  - ec2:UnassignPrivateIpAddresses
+                  - ec2:CreateVolume
+                  - ec2:DeleteVolume
+                  - ec2:AttachVolume
+                  - ec2:DetachVolume
+                  - ec2:CreateSecurityGroup
+                  - ec2:DeleteSecurityGroup
+                  - ec2:AuthorizeSecurityGroupIngress
+                  - ec2:AuthorizeSecurityGroupEgress
+                  - ec2:RevokeSecurityGroupIngress
+                  - ec2:RevokeSecurityGroupEgress
+                  - ec2:CreateKeyPair
+                  - ec2:DeleteKeyPair
+                  - ec2:CreateRouteTable
+                  - ec2:DeleteRouteTable
+                  - ec2:CreateRoute
+                  - ec2:DeleteRoute
+                  - ec2:ReplaceRoute
+                  - ec2:AssociateRouteTable
+                  - ec2:DisassociateRouteTable
+                  - ec2:CreateNatGateway
+                  - ec2:DeleteNatGateway
+                  - ec2:AllocateAddress
+                  - ec2:ReleaseAddress
+                  - ec2:AssociateAddress
+                  - ec2:DisassociateAddress
+                  - ec2:CreateDhcpOptions
+                  - ec2:DeleteDhcpOptions
+                  - ec2:AssociateDhcpOptions
+                  - ec2:CreateRouteServer
+                  - ec2:DeleteRouteServer
+                  - ec2:ModifyRouteServer
+                  - ec2:AssociateRouteServer
+                  - ec2:DisassociateRouteServer
+                  - ec2:CreateRouteServerEndpoint
+                  - ec2:DeleteRouteServerEndpoint
+                  - ec2:CreateRouteServerPeer
+                  - ec2:DeleteRouteServerPeer
+                  - ec2:EnableRouteServerPropagation
+                  - ec2:DisableRouteServerPropagation
+                  - ec2:GetRouteServerAssociations
+                  - ec2:GetRouteServerPropagations
+                  - ec2:CreateTransitGateway
+                  - ec2:DeleteTransitGateway
+                  - ec2:DescribeTransitGateways
+                  - ec2:ModifyTransitGateway
+                  - ec2:CreateTransitGatewayVpcAttachment
+                  - ec2:DeleteTransitGatewayVpcAttachment
+                  - ec2:ModifyTransitGatewayVpcAttachment
+                  - ec2:DescribeTransitGatewayVpcAttachments
+                  - ec2:CreateNetworkAcl
+                  - ec2:DeleteNetworkAcl
+                  - ec2:CreateNetworkAclEntry
+                  - ec2:DeleteNetworkAclEntry
+                  - ec2:ReplaceNetworkAclAssociation
+                  - ec2:DescribeNetworkAcls
+                  - ec2:AssociateVpcCidrBlock
+                  - ec2:DisassociateVpcCidrBlock
+                  - ec2:CreateIpam
+                  # No ec2:DeleteIpam: an IPAM is account/region-global shared
+                  # infrastructure that may be used by other workloads, so
+                  # teardown never deletes it — it only deprovisions/deletes
+                  # the pool + /28 this deployment created.
+                  - ec2:CreateIpamPool
+                  - ec2:DeleteIpamPool
+                  - ec2:ProvisionIpamPoolCidr
+                  - ec2:DeprovisionIpamPoolCidr
+                  - ec2:GetIpamPoolCidrs
+                  - ec2:AllocateIpamPoolCidr
+                  - ec2:ReleaseIpamPoolAllocation
+                Resource: "*"
+              - Sid: ServiceLinkedRoles
+                Effect: Allow
+                Action: iam:CreateServiceLinkedRole
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    # Scoped to ONLY these two service-linked roles: evs (the EVS
+                    # environment) and ipam (auto-provisioning the HCX public /28 when HCX
+                    # is on without a BYO cidr; idempotent if the SLR already exists).
+                    iam:AWSServiceName:
+                      - evs.amazonaws.com
+                      - ipam.amazonaws.com
+              - Sid: SupportAndQuotaChecks
+                Effect: Allow
+                Action:
+                  - servicequotas:GetServiceQuota
+                  - servicequotas:ListServiceQuotas
+                  # UserData preflight (step 3a) checks for an active Business/Enterprise
+                  # plan before a multi-hour deploy. Support API has no resource scoping, so
+                  # we grant only this action -- not the full support:* (read/create cases).
+                  - support:DescribeSeverityLevels
+                Resource: "*"
+              - Sid: Route53ForAwsConfigStage
+                Effect: Allow
+                Action:
+                  - route53:CreateHostedZone
+                  - route53:DeleteHostedZone
+                  - route53:GetHostedZone
+                  - route53:ListHostedZones
+                  - route53:ListHostedZonesByName
+                  - route53:ChangeResourceRecordSets
+                  - route53:ListResourceRecordSets
+                  - route53:GetChange
+                  - route53:ListQueryLoggingConfigs
+                  - route53:ChangeTagsForResource
+                  - route53:ListTagsForResource
+                  - route53:UpdateHostedZoneComment
+                  - route53:AssociateVPCWithHostedZone
+                  - route53:DisassociateVPCFromHostedZone
+                  - route53resolver:CreateResolverEndpoint
+                  - route53resolver:DeleteResolverEndpoint
+                  - route53resolver:GetResolverEndpoint
+                  - route53resolver:ListResolverEndpoints
+                  - route53resolver:ListResolverEndpointIpAddresses
+                  - route53resolver:ListTagsForResource
+                  - route53resolver:TagResource
+                  - route53resolver:UntagResource
+                  - route53resolver:UpdateResolverEndpoint
+                  - route53resolver:AssociateResolverEndpointIpAddress
+                  - route53resolver:DisassociateResolverEndpointIpAddress
+                Resource: "*"
+              - Sid: SecretsManagerScoped
+                Effect: Allow
+                Action:
+                  - secretsmanager:CreateSecret
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:PutSecretValue
+                  - secretsmanager:UpdateSecret
+                  - secretsmanager:DeleteSecret
+                  - secretsmanager:DescribeSecret
+                  - secretsmanager:TagResource
+                Resource:
+                  # Secrets THIS stack owns -- orchestrator-created (evs-<env>_*) and EVS
+                  # FAS-created host secrets (evs!<env>_*) -- so full lifecycle is needed.
+                  - !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:evs-*"
+                  - !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:evs!*"
+              - Sid: DepotSecretReadOnly
+                Effect: Allow
+                Action:
+                  # Read-only: the depot token is only ever read, never written --
+                  # create/put/delete here would let a compromised runner overwrite or
+                  # destroy the customer's long-lived Broadcom entitlement token.
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                Resource:
+                  - !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${DepotSecretName}-*"
+              - Sid: SecretsManagerAccountLevel
+                Effect: Allow
+                Action:
+                  - secretsmanager:ListSecrets
+                  - secretsmanager:GetRandomPassword
+                Resource: "*"
+              - Sid: RouteServerSnsDependency
+                # Route server manages an internal SNS topic, so Create/DeleteRouteServer
+                # need Create/DeleteTopic. Subscribe/Unsubscribe are deliberately omitted --
+                # on Resource "*" they'd let a compromised runner exfiltrate any topic.
+                Effect: Allow
+                Action:
+                  - sns:CreateTopic
+                  - sns:DeleteTopic
+                Resource: "*"
+              - Sid: SsmParameterRead
+                Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/evs/*"
+              - Sid: SsmWindowsAmiRead
+                # The jumpbox resolves its AMI via a {{resolve:ssm:...}} ref to the public
+                # ami-windows-latest param, which CFN reads with GetParameters (PLURAL, not
+                # the singular granted above) -- without it, jumpbox deploys roll back.
+                Effect: Allow
+                Action: ssm:GetParameters
+                Resource: !Sub "arn:aws:ssm:${AWS::Region}::parameter/aws/service/ami-windows-latest/*"
+              - Sid: SsmKeyPairPrivateKey
+                # AWS::EC2::KeyPair stores/deletes the generated private key in SSM
+                # Parameter Store under /ec2/keypair/<key_pair_id>; without this the
+                # CFN handler fails with "null"/InternalFailure. This role creates
+                # TWO key pairs — the bootstrap RunnerKeyPair AND the aws_config
+                # stack's EvsKeyPair — and each key-pair ID is generated at create
+                # time (not known when this template is authored), so this MUST stay
+                # /ec2/keypair/* and cannot be scoped to a specific key pair. (The
+                # runner is a short-lived, single-purpose instance in the customer's
+                # own account; tightening the read here needs a different design.)
+                Effect: Allow
+                Action:
+                  - ssm:PutParameter
+                  - ssm:DeleteParameter
+                  - ssm:GetParameter
+                Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/ec2/keypair/*"
+              - Sid: SessionManagerCore
+                # Replaces AmazonSSMManagedInstanceCore, which also grants ssm:GetParameter*
+                # on "*" -- that would shadow the scoped SSM statements above and let the
+                # runner read every param (incl. other stacks' keypair private keys). This
+                # grants only the minimum AWS documents for Session Manager connectivity.
+                Effect: Allow
+                Action:
+                  - ssmmessages:CreateControlChannel
+                  - ssmmessages:CreateDataChannel
+                  - ssmmessages:OpenControlChannel
+                  - ssmmessages:OpenDataChannel
+                  - ec2messages:AcknowledgeMessage
+                  - ec2messages:DeleteMessage
+                  - ec2messages:FailMessage
+                  - ec2messages:GetEndpoint
+                  - ec2messages:GetMessages
+                  - ec2messages:SendReply
+                  - ssm:UpdateInstanceInformation
+                Resource: "*"
+              - Sid: S3ArtifactBucketsRead
+                # Bucket names are parsed from the BlueprintKey/OvaKey/OvfKey URIs at
+                # render time (split "s3://bucket/key" on "/", take element 2); shared
+                # buckets just produce overlapping ARNs, which is harmless.
+                Effect: Allow
+                Action: [s3:GetObject, s3:ListBucket]
+                Resource:
+                  - !Sub
+                    - "arn:aws:s3:::${Bucket}"
+                    - Bucket: !Select [2, !Split ["/", !Ref BlueprintKey]]
+                  - !Sub
+                    - "arn:aws:s3:::${Bucket}/*"
+                    - Bucket: !Select [2, !Split ["/", !Ref BlueprintKey]]
+                  - !Sub
+                    - "arn:aws:s3:::${Bucket}"
+                    - Bucket: !Select [2, !Split ["/", !Ref OvaKey]]
+                  - !Sub
+                    - "arn:aws:s3:::${Bucket}/*"
+                    - Bucket: !Select [2, !Split ["/", !Ref OvaKey]]
+                  - !Sub
+                    - "arn:aws:s3:::${Bucket}"
+                    - Bucket: !Select [2, !Split ["/", !Ref OvfKey]]
+                  - !Sub
+                    - "arn:aws:s3:::${Bucket}/*"
+                    - Bucket: !Select [2, !Split ["/", !Ref OvfKey]]
+              - Sid: CloudFormationAwsConfigStack
+                # The orchestrator's aws_config stage deploys/deletes its own
+                # CloudFormation stack (<stack-name>-amazon-evs-<version>-infrastructure)
+                # for the landing zone.
+                Effect: Allow
+                Action:
+                  - cloudformation:CreateStack
+                  - cloudformation:UpdateStack
+                  - cloudformation:DeleteStack
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:DescribeStackResources
+                  - cloudformation:GetTemplate
+                  - cloudformation:ListStackResources
+                Resource:
+                  - !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}-amazon-evs-*-infrastructure/*"
+              - Sid: CloudFormationSignalOwnStack
+                # The runner signals its own CreationPolicy after preflight so
+                # bad inputs fail this stack in minutes.
+                Effect: Allow
+                Action: cloudformation:SignalResource
+                Resource: !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*"
+              - Sid: SnsPublishCompletion
+                Effect: Allow
+                Action: sns:Publish
+                Resource: !If
+                  - CreateNotifications
+                  - !Ref SnsTopicArn
+                  - !Sub "arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${AWS::StackName}-unused"
+
+  RunnerInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref RunnerRole]
+
+  # ---------------------------------------------------------------- runner
+  RunnerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: >-
+        EVS orchestrator runner (egress only - if using KeyPairName for SSH,
+        add your own ingress rule to this group after the stack is created)
+      VpcId: !If [CreateNetwork, !Ref Vpc, !Ref ExistingVpcId]
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+      Tags: [{Key: Name, Value: !Sub "${AWS::StackName}-runner-sg"}]
+
+  # ------------------------------------------------------------- log groups
+  # Pre-created (rather than agent-created) so retention is bounded. Both use
+  # DeletionPolicy: Retain — intentionally kept after stack deletion for
+  # post-incident review; operators delete them manually to reclaim.
+  BootstrapLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub
+        - "/evs/${AWS::StackName}-${Suffix}/bootstrap"
+        - Suffix: !Select [0, !Split ["-", !Select [2, !Split ["/", !Ref "AWS::StackId"]]]]
+      RetentionInDays: 90
+
+  OrchestratorLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub
+        - "/evs/${AWS::StackName}-${Suffix}/orchestrator"
+        - Suffix: !Select [0, !Split ["-", !Select [2, !Split ["/", !Ref "AWS::StackId"]]]]
+      RetentionInDays: 90
+
+  RunnerKeyPair:
+    Type: AWS::EC2::KeyPair
+    Condition: CreateRunnerKeyPair
+    Properties:
+      KeyName: !Sub "${AWS::StackName}-runner-key"
+      KeyType: rsa
+      KeyFormat: pem
+      Tags: [{Key: Name, Value: !Sub "${AWS::StackName}-runner-key"}]
+
+  RunnerInstance:
+    Type: AWS::EC2::Instance
+    CreationPolicy:
+      # The stack only goes green after the runner's preflight passes (support
+      # plan, AZ metal capacity, artifacts, depot secret). Bad inputs fail the
+      # stack in minutes instead of a silent multi-hour failure.
+      ResourceSignal:
+        Count: 1
+        Timeout: PT20M
+    Properties:
+      # Use the SSM parameter TYPE (resolves once at create), NOT an inline
+      # Latest AL2023 AMI via an inline SSM dynamic reference (no user-facing
+      # parameter). NOTE: a dynamic reference re-resolves on every stack update,
+      # so do not update this stack mid-deployment — a newly-released AMI could
+      # replace the runner and lose /opt/evs resume state.
+      ImageId: "{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}"
+      InstanceType: !Ref RunnerInstanceType
+      IamInstanceProfile: !Ref RunnerInstanceProfile
+      KeyName: !If [CreateRunnerKeyPair, !Ref RunnerKeyPair, !Ref KeyPairName]
+      SubnetId: !If [CreateNetwork, !Ref PublicSubnet, !Ref ExistingRunnerSubnetId]
+      SecurityGroupIds: [!GetAtt RunnerSecurityGroup.GroupId]
+      MetadataOptions:
+        HttpTokens: required
+        HttpEndpoint: enabled
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs: {VolumeSize: 50, VolumeType: gp3, Encrypted: true}
+      Tags:
+        - {Key: Name, Value: !Sub "${AWS::StackName}-runner"}
+        - {Key: evs-deployment, Value: RUNNING}
+        # Implicit dependency: ensures the IGW default route exists before the
+        # runner boots (user data needs egress immediately). Resolves to the
+        # route ID when we create the network, harmless constant in BYO mode.
+        - {Key: evs-network-dependency, Value: !If [CreateNetwork, !Ref PublicDefaultRoute, "byo"]}
+      UserData:
+        Fn::Base64: !Sub
+          - |
+            #!/bin/bash
+            set -uo pipefail
+            exec > /var/log/evs-bootstrap.log 2>&1
+            echo "=== EVS Deployment Orchestrator bootstrap starting $(date -u) ==="
+
+            INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $(curl -s -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 300')" http://169.254.169.254/latest/meta-data/instance-id)
+            AZ=$(curl -s -H "X-aws-ec2-metadata-token: $(curl -s -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 300')" http://169.254.169.254/latest/meta-data/placement/availability-zone)
+            notify() {
+              aws ec2 create-tags --region ${AWS::Region} --resources "$INSTANCE_ID" --tags Key=evs-deployment,Value="$1" || true
+              if [ -n "${TopicArn}" ]; then
+                aws sns publish --region ${AWS::Region} --topic-arn "${TopicArn}" \
+                  --subject "EVS deployment $1" --message "$2" || true
+              fi
+            }
+            # fail() also fails the CloudFormation stack (CreationPolicy signal) so
+            # bad inputs surface as CREATE_FAILED in minutes, with the reason in
+            # both the stack events and CloudWatch ${BootstrapLogGroupName}.
+            fail() {
+              echo "BOOTSTRAP FAILED: $1"
+              notify FAILED "$1 (log: CloudWatch ${BootstrapLogGroupName}, instance $INSTANCE_ID)"
+              aws cloudformation signal-resource --region ${AWS::Region} \
+                --stack-name "${AWS::StackName}" --logical-resource-id RunnerInstance \
+                --unique-id "$INSTANCE_ID" --status FAILURE || true
+              exit 1
+            }
+            retry() { local n=0; until "$@"; do n=$((n+1)); [ "$n" -ge 3 ] && return 1; echo "retry $n: $*"; sleep 10; done; }
+
+            # 0. Swap: the OVA deploy peaks memory; swap prevents OOM-kills on
+            #    smaller runner types.
+            fallocate -l 4G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile || echo "WARN: swap setup failed (continuing)"
+
+            # 1. Runtime + CloudWatch log streaming
+            # libnsl: legacy compat library removed from AL2023; required at runtime by ovftool 4.6.3 bundled libs
+            retry dnf install -y python3.11 python3.11-pip git unzip amazon-cloudwatch-agent libnsl || fail "package install"
+            cat > /opt/aws/amazon-cloudwatch-agent/etc/config.json <<CWEOF
+            {"logs":{"logs_collected":{"files":{"collect_list":[
+              {"file_path":"/var/log/evs-bootstrap.log","log_group_name":"${BootstrapLogGroupName}","log_stream_name":"{instance_id}"},
+              {"file_path":"/opt/evs/orchestrator.log","log_group_name":"${OrchestratorLogGroupName}","log_stream_name":"{instance_id}"}
+            ]}}}}
+            CWEOF
+            /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/opt/aws/amazon-cloudwatch-agent/etc/config.json -s || true
+
+            # 2. Orchestrator source: git clone from the public repo at the ref
+            #    named by PINNED_COMMIT below.
+            #    NOTE: this block is inside Fn::Sub - bash variables here use
+            #    the $var form (no braces) so they aren't parsed as CFN subs.
+            mkdir -p /opt/evs && cd /opt/evs
+            # Tracks the main branch rather than an immutable SHA or tag, so a
+            # freshly-merged fix reaches new deployments without a template
+            # change. The trade-off is deliberate: main is a moving tip, so a
+            # regression merged upstream affects new stacks (and stack updates,
+            # which re-run this bootstrap) immediately. Every change to main goes
+            # through PR review on the public repo. If you need a build frozen
+            # against code you have reviewed yourself, set PINNED_COMMIT to a tag
+            # or a full commit SHA instead -- the checkout below accepts any of
+            # the three.
+            PINNED_COMMIT="main"
+            retry git clone "https://github.com/aws/solutions-for-amazon-evs.git" src || fail "git clone https://github.com/aws/solutions-for-amazon-evs"
+            (cd src && git checkout --quiet "$PINNED_COMMIT") || fail "checkout $PINNED_COMMIT (no such branch, tag, or commit in the upstream repo)"
+            cd src/Deploy/EVS-Deployment-Orchestrator/orchestrator || fail "the orchestrator directory is missing at PINNED_COMMIT=$PINNED_COMMIT -- the clone succeeded but that ref does not contain Deploy/EVS-Deployment-Orchestrator/orchestrator. Check the PINNED_COMMIT value in this template."
+            echo "orchestrator commit: $(git rev-parse HEAD)"
+            retry python3.11 -m pip install --quiet pyyaml || fail "pyyaml install"
+
+            # 3. Account preflight - fail the stack in minutes, not the
+            #    deployment in hours.
+            #    3a. Business Support plan (hard EVS requirement; the eventual
+            #        CreateEnvironment error is cryptic).
+            SUPPORT_ERR=$(aws support describe-severity-levels --region us-east-1 2>&1 >/dev/null) \
+              || { echo "$SUPPORT_ERR" | grep -q SubscriptionRequiredException \
+                   && fail "This account has no Business/Enterprise Support plan - a hard Amazon EVS requirement. Add a support plan and relaunch." \
+                   || echo "WARN: support plan probe inconclusive: $SUPPORT_ERR"; }
+            # 4. Parse bucket/key out of each S3 URI parameter (all three are
+            #    validated by the CFN parameter AllowedPattern to start with
+            #    "s3://"). ovftool must be the Linux .zip, not the Windows .msi.
+            BLUEPRINT_BUCKET=$(echo "${BlueprintKey}" | sed -E 's#^s3://([^/]+)/.*#\1#')
+            BLUEPRINT_OBJ_KEY=$(echo "${BlueprintKey}" | sed -E 's#^s3://[^/]+/##')
+            OVA_BUCKET=$(echo "${OvaKey}" | sed -E 's#^s3://([^/]+)/.*#\1#')
+            OVA_OBJ_KEY=$(echo "${OvaKey}" | sed -E 's#^s3://[^/]+/##')
+            OVFTOOL_BUCKET=$(echo "${OvfKey}" | sed -E 's#^s3://([^/]+)/.*#\1#')
+            OVFTOOL_OBJ_KEY=$(echo "${OvfKey}" | sed -E 's#^s3://[^/]+/##')
+            case "$OVFTOOL_OBJ_KEY" in *.msi) fail "OvfKey points at a Windows .msi but the runner is Linux - provide the Linux ovftool .zip" ;; esac
+
+            # 5. Preflight: verify all three artifacts exist before the multi-hour
+            #    deploy. Capture stderr so a 403 (IAM/bucket policy) is reported
+            #    distinctly from a 404 (wrong URI), not one generic "not found".
+            check_s3_object() {
+              local bucket="$1" key="$2" uri="$3" label="$4"
+              local err
+              err=$(aws s3api head-object --bucket "$bucket" --key "$key" --region ${AWS::Region} 2>&1 >/dev/null) && return 0
+              if echo "$err" | grep -qiE "403|Forbidden|AccessDenied"; then
+                fail "$label access denied (403): $uri - check the runner role's S3ArtifactBucketsRead policy covers this bucket, and that the bucket policy allows GetObject from this account. Raw error: $err"
+              elif echo "$err" | grep -qiE "PermanentRedirect|IllegalLocationConstraintException|region"; then
+                fail "$label appears to be in a different region than ${AWS::Region}: $uri. Raw error: $err"
+              else
+                fail "$label not found (404): $uri - check the URI is correct and the object exists. Raw error: $err"
+              fi
+            }
+            check_s3_object "$BLUEPRINT_BUCKET" "$BLUEPRINT_OBJ_KEY" "${BlueprintKey}" "blueprint"
+            check_s3_object "$OVA_BUCKET" "$OVA_OBJ_KEY" "${OvaKey}" "VCF Installer OVA"
+            check_s3_object "$OVFTOOL_BUCKET" "$OVFTOOL_OBJ_KEY" "${OvfKey}" "ovftool"
+
+            # 6. Download the blueprint (OVA/ovftool are downloaded later by
+            #    the orchestrator itself, from esxi_prework.ova_s3_uri /
+            #    ovftool_s3_uri, injected below).
+            retry aws s3 cp "s3://$BLUEPRINT_BUCKET/$BLUEPRINT_OBJ_KEY" ./blueprint.yaml --region ${AWS::Region} \
+              || fail "blueprint download ${BlueprintKey} failed"
+
+            #    6b. Bare-metal capacity offered in this AZ (reads instance
+            #        type from the just-downloaded blueprint).
+            INSTANCE_TYPE=$(python3.11 -c "import yaml;print(yaml.safe_load(open('blueprint.yaml')).get('evs',{}).get('instance_type','i4i.metal'))" 2>/dev/null || echo "i4i.metal")
+            METAL_OK=$(aws ec2 describe-instance-type-offerings --region ${AWS::Region} \
+              --location-type availability-zone \
+              --filters "Name=location,Values=$AZ" "Name=instance-type,Values=$INSTANCE_TYPE" \
+              --query 'length(InstanceTypeOfferings)' --output text 2>/dev/null || echo "err")
+            [ "$METAL_OK" = "0" ] && fail "$INSTANCE_TYPE is not offered in $AZ. Relaunch with an AvailabilityZone that offers it."
+
+            # 7. Overlay bootstrap-created infrastructure IDs (and the OVA/
+            #    ovftool URIs) into the blueprint. Empty values (BYO mode)
+            #    never overwrite existing blueprint entries.
+            python3.11 - <<PYEOF || fail "blueprint overlay"
+            import yaml
+            with open("blueprint.yaml") as f:
+                bp = yaml.safe_load(f)
+            vpc = bp.setdefault("vpc", {})
+            overlay = {
+                "id": "${VpcIdValue}",
+                "cidr_prefix": "${CidrPrefix}",
+                "service_access_subnet_id": "${ServiceAccessSubnetIdValue}",
+                "service_access_route_table_id": "${ServiceAccessRouteTableIdValue}",
+                "public_subnet_id": "${PublicSubnetIdValue}",
+                "public_subnet_route_table_id": "${PublicRouteTableIdValue}",
+            }
+            for key, value in overlay.items():
+                if value:
+                    vpc[key] = value
+            # aws.region is derived from aws.availability_zone by _normalize_config
+            # (strips the AZ letter), so without this _validate_config fails on
+            # "Missing aws.region". $AZ is the IMDS-resolved AZ where the runner landed.
+            bp.setdefault("aws", {})["availability_zone"] = "$AZ"
+            bp.setdefault("aws", {})["bootstrap_stack_name"] = "${AWS::StackName}"
+            # The runner's effective key pair (the customer's KeyPairName when
+            # supplied, else the auto-created <stack>-runner-key). Passed through
+            # so the optional Windows jumpbox can be launched with the SAME key,
+            # rather than the separate EVS-KeyPair-<stack> that EVS requires for
+            # the ESXi hosts -- one key for SSH to the runner AND RDP to the
+            # jumpbox, which is what the README documents.
+            bp.setdefault("aws", {})["runner_key_name"] = "${RunnerKeyNameValue}"
+            bp.setdefault("esxi_prework", {})["ova_s3_uri"] = "${OvaKey}"
+            bp.setdefault("esxi_prework", {})["ovftool_s3_uri"] = "${OvfKey}"
+            # Inject the depot secret name from the CFN parameter so customers
+            # don't need to put it in the blueprint at all.
+            bp.setdefault("phase3", {})["depot_token_secret"] = "${DepotSecretName}"
+            with open("blueprint.yaml", "w") as f:
+                yaml.safe_dump(bp, f, sort_keys=False)
+            print("blueprint overlay complete")
+            PYEOF
+
+            # 8. Depot secret preflight: verify it exists before committing to
+            #    the multi-hour deployment (the orchestrator would only find
+            #    out hours in, at the phase3_deploy stage).
+            DEPOT_SECRET=$(python3.11 -c "import yaml;print(yaml.safe_load(open('blueprint.yaml'))['phase3']['depot_token_secret'])" 2>/dev/null) || fail "blueprint is missing phase3.depot_token_secret"
+            DEPOT_ERR=$(aws secretsmanager describe-secret --secret-id "$DEPOT_SECRET" --region ${AWS::Region} 2>&1 >/dev/null) || {
+              if echo "$DEPOT_ERR" | grep -qiE "AccessDenied"; then
+                fail "Secrets Manager secret '$DEPOT_SECRET' access denied - ensure the DepotSecretName stack parameter matches your secret name, or check for an IAM/KMS restriction. Raw error: $DEPOT_ERR"
+              else
+                fail "Secrets Manager secret '$DEPOT_SECRET' not found in ${AWS::Region}. Create it with your Broadcom depot token before launching, and ensure the DepotSecretName stack parameter matches. Raw error: $DEPOT_ERR"
+              fi
+            }
+
+            # Preflight passed - green-light the stack.
+            aws cloudformation signal-resource --region ${AWS::Region} \
+              --stack-name "${AWS::StackName}" --logical-resource-id RunnerInstance \
+              --unique-id "$INSTANCE_ID" --status SUCCESS || true
+
+            # 9. Launch the orchestrator detached; it self-installs its Python deps.
+            #    NOTIFICATION_TOPIC_ARN lets its own SNS calls fire on a later manual
+            #    --resume/--destroy over SSH too -- the bash notify()/watcher only cover THIS run.
+            #    No start notification here: the orchestrator publishes its own
+            #    "Deployment started" message moments later. The notify FAILED path
+            #    above still covers a bootstrap that never reaches this point.
+            NOTIFICATION_TOPIC_ARN="${TopicArn}" setsid nohup python3.11 deploy_orchestrator.py --config blueprint.yaml --vpc-create ${VpcCreateFlag} > /opt/evs/orchestrator.log 2>&1 < /dev/null &
+
+            # 10. Completion watcher -> instance tag + SNS, keying only on the success
+            #    sentinel or the process being gone. Deliberately NOT on "FAIL ["/
+            #    "Traceback": those also match failures the operator resumed past, so a
+            #    watcher on them latches FAILED early (seen live). And the failure MSG
+            #    must NOT name the script literally -- this bash -c body is the watcher's
+            #    own command line, so the name would match "pkill -f ...py" and die with it.
+            setsid nohup bash -c '
+              while true; do
+                grep -q "ALL STAGES COMPLETE" /opt/evs/orchestrator.log 2>/dev/null && break
+                pgrep -f "[d]eploy_orchestrator.py" >/dev/null || { sleep 120; pgrep -f "[d]eploy_orchestrator.py" >/dev/null || break; }
+                sleep 60
+              done
+              if grep -q "ALL STAGES COMPLETE" /opt/evs/orchestrator.log 2>/dev/null; then S=SUCCEEDED; else S=FAILED; fi
+              aws ec2 create-tags --region ${AWS::Region} --resources '"$INSTANCE_ID"' --tags Key=evs-deployment,Value=$S || true
+              if [ "$S" = "FAILED" ]; then
+                STAGE=$(grep -oE "FAIL  \[[a-z0-9_]+\]" /opt/evs/orchestrator.log 2>/dev/null | tail -1)
+                MSG="EVS deployment FAILED $STAGE. NOTE: any created EVS hosts are still billing - resume or destroy, do not delete the stack first. To resume, use this stack'"'"'s ResumeCommand output (SSM to '"$INSTANCE_ID"', then rerun the orchestrator with --resume). Last log lines: $(tail -5 /opt/evs/orchestrator.log 2>/dev/null)"
+                # Only publish if the orchestrator didn't already send its own failure notification
+                # (it logs "SNS notification sent" when it does). Avoids duplicate emails.
+                if ! grep -q "SNS notification sent" /opt/evs/orchestrator.log 2>/dev/null; then
+                  [ -n "${TopicArn}" ] && aws sns publish --region ${AWS::Region} --topic-arn "${TopicArn}" \
+                    --subject "EVS deployment FAILED" --message "$MSG"
+                fi
+              fi
+            ' >/dev/null 2>&1 &
+            echo "=== bootstrap handoff complete $(date -u) ==="
+          - VpcIdValue: !If [CreateNetwork, !Ref Vpc, !Ref ExistingVpcId]
+            RunnerKeyNameValue: !If [CreateRunnerKeyPair, !Ref RunnerKeyPair, !Ref KeyPairName]
+            ServiceAccessSubnetIdValue: !If [CreateNetwork, !Ref ServiceAccessSubnet, !Ref ExistingServiceAccessSubnetId]
+            ServiceAccessRouteTableIdValue: !If [CreateNetwork, !Ref ServiceAccessRouteTable, !Ref ExistingServiceAccessRouteTableId]
+            PublicSubnetIdValue: !If [CreateNetwork, !Ref PublicSubnet, !Ref ExistingPublicSubnetId]
+            PublicRouteTableIdValue: !If [CreateNetwork, !Ref PublicRouteTable, ""]
+            TopicArn: !If [CreateNotifications, !Ref SnsTopicArn, ""]
+            VpcCreateFlag: !If [CreateNetwork, "true", "false"]
+            BootstrapLogGroupName: !Ref BootstrapLogGroup
+            OrchestratorLogGroupName: !Ref OrchestratorLogGroup
+
+Outputs:
+  VpcId:
+    Description: >-
+      The VPC hosting the deployment — the one this stack created, or your
+      ExistingVpcId in BYO-VPC mode.
+    Value: !If [CreateNetwork, !Ref Vpc, !Ref ExistingVpcId]
+  ServiceAccessSubnetId:
+    Description: >-
+      The service-access subnet EVS uses for the environment's management
+      appliances.
+    Value: !If [CreateNetwork, !Ref ServiceAccessSubnet, !Ref ExistingServiceAccessSubnetId]
+  RunnerInstanceId:
+    Description: Watch deployment status via the evs-deployment tag on this instance.
+    Value: !Ref RunnerInstance
+  OrchestratorLogsUrl:
+    Description: Live deployment log (the ~4-hour story).
+    Value: !Sub
+      - "https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#logsV2:log-groups/log-group/${LogGroupEncoded}"
+      - LogGroupEncoded: !Join ["$252F", !Split ["/", !Ref OrchestratorLogGroup]]
+  BootstrapLogsUrl:
+    Description: Runner bootstrap log (check here if the stack itself failed).
+    Value: !Sub
+      - "https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#logsV2:log-groups/log-group/${LogGroupEncoded}"
+      - LogGroupEncoded: !Join ["$252F", !Split ["/", !Ref BootstrapLogGroup]]
+  MonitorCommand:
+    Description: Check deployment status from any shell.
+    Value: !Sub "aws ec2 describe-tags --region ${AWS::Region} --filters Name=resource-id,Values=${RunnerInstance} Name=key,Values=evs-deployment --query 'Tags[0].Value' --output text"
+  ResumeCommand:
+    Description: >-
+      After fixing a failure, connect to the runner (via SSM Session Manager
+      or SSH — see README for SSH setup) and run this command to resume from
+      the failed stage.
+    Value: !Sub
+      - "cd /opt/evs/src/Deploy/EVS-Deployment-Orchestrator/orchestrator && sudo setsid env NOTIFICATION_TOPIC_ARN='${TopicArnOut}' nohup python3.11 deploy_orchestrator.py --config blueprint.yaml --vpc-create ${VpcCreateFlagOut} --resume >> /opt/evs/orchestrator.log 2>&1 < /dev/null &"
+      - TopicArnOut: !If [CreateNotifications, !Ref SnsTopicArn, ""]
+        VpcCreateFlagOut: !If [CreateNetwork, "true", "false"]
+  DestroyCommand:
+    Description: >-
+      Tear down the EVS environment and orchestrator-created resources (run
+      BEFORE deleting this stack). Connect to the runner (via SSM Session
+      Manager or SSH) and run this command.
+    Value: !Sub
+      - "cd /opt/evs/src/Deploy/EVS-Deployment-Orchestrator/orchestrator && sudo NOTIFICATION_TOPIC_ARN='${TopicArnOut}' python3.11 deploy_orchestrator.py --config blueprint.yaml --vpc-create ${VpcCreateFlagOut} --destroy"
+      - TopicArnOut: !If [CreateNotifications, !Ref SnsTopicArn, ""]
+        VpcCreateFlagOut: !If [CreateNetwork, "true", "false"]
+  SnsTopicArn:
+    Condition: CreateNotifications
+    Description: The SNS topic receiving deployment status messages.
+    Value: !Ref SnsTopicArn
+  TeardownOrder:
+    Description: IMPORTANT - teardown order
+    Value: >-
+      1) Run the orchestrator with --destroy (see DestroyCommand) to remove the
+      EVS environment and orchestrator-created AWS resources. 2) Only then
+      delete this stack. Deleting the stack first strands billing bare-metal
+      hosts.
