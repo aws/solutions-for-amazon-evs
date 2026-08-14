@@ -1,0 +1,2 @@
+# Generated spec files contain plaintext passwords - never commit
+sddc_spec_*.json

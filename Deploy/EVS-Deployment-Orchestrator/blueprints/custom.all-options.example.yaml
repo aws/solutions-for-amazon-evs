@@ -1,0 +1,85 @@
+# EVS Automated Install — FULL reference blueprint (everything commented out)
+# ---------------------------------------------------------------------------
+# Use this when you want to build a custom configuration from scratch. Every
+# supported blueprint option is listed below, commented out, with notes (the
+# CloudFormation template supplies the AWS networking values itself).
+# Uncomment the lines you need and edit the values.
+#
+# AT A MINIMUM you must uncomment and set every field marked "REQUIRED":
+#   dns.fqdn, evs.environment_name, evs.instance_type, evs.vcf_version,
+#   evs.terms_accepted, evs.simple_deployment, a hostnames.esxi list,
+#   hostnames.vcenter, hostnames.nsx, hostnames.sddc_manager, and all six
+#   sizing.* fields. These have no defaults — omitting any one fails validation
+#   at launch. Everything not marked REQUIRED is optional.
+#
+# It's usually easier to start from one of the ready-made blueprints in this
+# folder (they set every required field, leaving two "CHANGE ME" values) and
+# add options from this file as needed.
+#
+# (The OVA + ovftool are the OvaKey/OvfKey CloudFormation parameters — not set here.)
+# For ready-made starting points, see the other files in this blueprints/ folder.
+
+# dns:
+#   fqdn: "vcf.example.internal"            # REQUIRED. Any private domain you choose (a private DNS zone is auto-created).
+#                                           #   Rule: at least one dot, no trailing dot, each label letters/digits/
+#                                           #   hyphens only (no leading/trailing hyphen). Keep it short — hostnames
+#                                           #   below become "<name>.<fqdn>" with no combined-length check.
+
+# evs:
+#   environment_name: "my-vcf-env"          # REQUIRED. Display name (letters, digits, hyphens, underscores;
+#                                           #   must start with a letter/digit; max 100 chars; no dots/spaces).
+#                                           #   Enforced by the EVS API, not locally — an invalid name fails
+#                                           #   at the aws_config stage, not at launch.
+#   instance_type: "i4i.metal"              # REQUIRED. ESXi bare-metal type: i4i.metal (128 vCPUs) or i7i.metal-24xl (96 vCPUs).
+#   vcf_version: "9.1.0"                    # REQUIRED. "9.0.2" or "9.1.0".
+#   terms_accepted: true                    # REQUIRED. Must be true (EVS terms acceptance).
+#   simple_deployment: true                 # REQUIRED. true = single NSX Manager (lab/demo);
+#                                           #   false = 3-node NSX Manager cluster + HA Ops (production) — needs 4+ hosts.
+#   esx_version: "ESXi-9.1.0.0100.25433460" # OPTIONAL. Pin an exact ESXi build (must start with "ESXi-").
+#                                           #   Omit to auto-select the newest build for vcf_version. Only set if you
+#                                           #   need a specific, previously-validated build.
+
+# sizing:                                   # REQUIRED block — every field below must be set (no defaults).
+#   vcenter_size: "small"                   # REQUIRED. tiny / small / medium / large / xlarge
+#   vcenter_storage_size: "lstorage"        # REQUIRED. vSAN datastore sizing: lstorage / xlstorage
+#   nsx_size: "medium"                      # REQUIRED. medium / large / xlarge
+#   operations_appliance_size: "medium"     # REQUIRED. simple mode: xsmall..xlarge  |  HA mode: medium / large / xlarge
+#   operations_collector_appliance_size: "small"   # REQUIRED. small / standard
+#   edge_form_factor: "LARGE"               # REQUIRED. SMALL / MEDIUM / LARGE / XLARGE
+
+# hostnames:
+#   # ── HOW TO ADD / REMOVE HOSTS ──────────────────────────────────────────────
+#   #   The number of entries in this list = the number of ESXi hosts.
+#   #     • simple_deployment: true   → minimum 3 hosts
+#   #     • simple_deployment: false  → minimum 4 hosts (HA)
+#   #     • Add entries for more capacity, e.g. ["esxi01","esxi02","esxi03","esxi04","esxi05"].
+#   #   Each host is one bare-metal server (i4i.metal = 128 vCPUs, i7i.metal-24xl = 96 vCPUs).
+#   #   Make sure your EC2 vCPU quota (L-1216C47A) >= (number of hosts × vCPUs-per-host).
+#   #
+#   #   Hostname rules — esxi entries: 1-63 chars, letters/digits/hyphens only,
+#   #   no leading/trailing hyphen, and each must be unique. vcenter/nsx/
+#   #   sddc_manager (below) become DNS labels under dns.fqdn (e.g. vc.<fqdn>)
+#   #   and are validated against the same label rules, as is the combined
+#   #   "<name>.<fqdn>" length (253-char DNS limit).
+#   # ───────────────────────────────────────────────────────────────────────────
+#   esxi: ["esxi01", "esxi02", "esxi03"]    # REQUIRED (a host list).
+#   vcenter: "vc"                           # REQUIRED short hostname -> vc.<fqdn>
+#   nsx: "nsx"                              # REQUIRED short hostname for NSX Manager
+#   sddc_manager: "sddcm"                   # REQUIRED short hostname for SDDC Manager
+#   # edge01: "edge01"                      # OPTIONAL hostname overrides (sensible defaults if omitted)
+#   # edge02: "edge02"
+#   # vcf_ops: "vcfops"
+
+# jumpbox:
+#   enabled: false                          # OPTIONAL. true = Windows jumpbox in the public subnet to reach the
+#                                           #   private VCF UIs (ships with NO inbound access — see README "Windows jumpbox").
+#   instance_type: "t3.xlarge"              # OPTIONAL. Jumpbox size (default t3.xlarge).
+
+# hcx:
+#   enabled: false                          # OPTIONAL. true = VMware HCX (workload migration / network extension).
+#   public_cidr: "203.0.113.0/28"           # OPTIONAL (recommended if HCX on): bring your own routable /28.
+#                                           #   If omitted, an Amazon /28 is auto-provisioned via IPAM (max 2 per region).
+
+# phase3:
+#   ntp: ["time.aws.com"]                   # OPTIONAL. NTP servers for all VCF appliances (default time.aws.com).
+#   ceip: false                             # OPTIONAL. VMware telemetry opt-in (true/false).
