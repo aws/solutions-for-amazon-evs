@@ -2237,21 +2237,71 @@ def _provision_hcx_ipam(config: dict) -> dict:
     else:
         logger.info("  VPC already has CIDR %s", cidr)
 
-    # 5. Allocate EIPs from the pool (3 EIPs: HCX Manager, IX, Network Extension)
-    # EVS reserves the first 2 and last IP from the /28, so we must manually
-    # pick addresses from .3 onwards. Use ipam-pool-id + address.
+    # 5. Allocate the EIPs from inside the /28 (shared with the BYO-CIDR path).
+    eip_allocation_ids = _allocate_hcx_eips_in_cidr(
+        ec2, cidr, tag_name, ipam_pool_id=pool_id,
+    )
+
+    return {
+        "cidr": cidr,
+        "eip_allocation_ids": eip_allocation_ids,
+        "ipam_pool_id": pool_id,
+    }
+
+
+def _resolve_ipam_pool_for_cidr(ec2, cidr: str) -> str | None:
+    """Return the IPAM pool that owns cidr, or None if no pool provisioned it.
+
+    A bring-your-own HCX CIDR normally comes from an IPAM pool the customer
+    provisioned, but they only tell us the CIDR, not the pool. EIPs inside that
+    range can only be allocated by naming the owning pool, so look it up.
+    Returns None for a CIDR that isn't IPAM-backed (e.g. plain BYOIP), which the
+    caller handles by allocating on address alone.
+    """
+    try:
+        pools = ec2.describe_ipam_pools().get("IpamPools", [])
+    except Exception as e:  # noqa: BLE001 — best-effort lookup
+        logger.info("  Could not list IPAM pools (%s); will allocate by address only", e)
+        return None
+    for p in pools:
+        if p.get("AddressFamily") != "ipv4":
+            continue
+        pid = p.get("IpamPoolId")
+        try:
+            entries = ec2.get_ipam_pool_cidrs(IpamPoolId=pid).get("IpamPoolCidrs", [])
+        except Exception:  # noqa: BLE001
+            continue
+        if any(c.get("Cidr") == cidr for c in entries):
+            logger.info("  BYO HCX CIDR %s is owned by IPAM pool %s", cidr, pid)
+            return pid
+    logger.info("  No IPAM pool owns %s — allocating by address only", cidr)
+    return None
+
+
+def _allocate_hcx_eips_in_cidr(ec2, cidr: str, tag_name: str,
+                               ipam_pool_id: str | None = None) -> list[str]:
+    """Allocate the 3 HCX EIPs (Manager/IX/NE) from inside cidr.
+
+    EVS requires every HCX EIP to fall within the HCX VLAN CIDR and rejects
+    AssociateEipToVlan otherwise ("IP address X is not within the VLAN CIDR
+    block"), so these can never come from the standard Amazon pool. Shared by
+    the auto-IPAM path and the BYO-CIDR path -- while only auto allocated them,
+    BYO silently got a standard-pool address and failed at association.
+
+    EVS reserves the first two addresses and the last, so allocation starts at
+    .3. Tags each EIP Name=<tag_name>-<role>, which is what teardown matches to
+    release them.
+    """
     import ipaddress
     network = ipaddress.IPv4Network(cidr)
-    # .0=network, .1=gateway(reserved), .2=reserved, .15=broadcast
-    # Usable for EIPs: .3 through .14
+    # .0=network, .1=gateway(reserved), .2=reserved, last=broadcast
     usable_ips = [str(network.network_address + i) for i in range(3, 6)]
-
-    # Reuse ANY unassociated EIP inside this CIDR, not just ones carrying
-    # this stack's tags — a previous deployment of the reclaimed /28 leaves
-    # its EIPs behind, and re-allocating the same addresses fails with an
-    # overlap error. Retag reused ones for this stack.
     labels = ["manager", "ix", "ne"]
-    existing_alloc_ids = []
+
+    # Reuse ANY unassociated EIP inside this CIDR, not just ones carrying this
+    # stack's tags — a previous deployment of the same /28 leaves its EIPs
+    # behind, and re-allocating those addresses fails with an overlap error.
+    existing_alloc_ids: list[str] = []
     for e in ec2.describe_addresses().get("Addresses", []):
         try:
             in_cidr = ipaddress.IPv4Address(e.get("PublicIp", "0.0.0.0")) in network
@@ -2267,30 +2317,37 @@ def _provision_hcx_ipam(config: dict) -> dict:
                         e["PublicIp"], labels[len(existing_alloc_ids) - 1])
 
     if len(existing_alloc_ids) >= 3:
-        eip_allocation_ids = existing_alloc_ids[:3]
-        logger.info("  HCX EIPs already allocated: %s", eip_allocation_ids)
-    else:
-        eip_allocation_ids = list(existing_alloc_ids)
-        for i, ip in enumerate(usable_ips):
-            if i < len(existing_alloc_ids):
-                continue
-            resp = ec2.allocate_address(
-                Domain="vpc",
-                Address=ip,
-                IpamPoolId=pool_id,
-                TagSpecifications=[{
-                    "ResourceType": "elastic-ip",
-                    "Tags": [{"Key": "Name", "Value": f"{tag_name}-{labels[i]}"}],
-                }],
-            )
-            eip_allocation_ids.append(resp["AllocationId"])
-            logger.info("  Allocated HCX EIP: %s (%s)", resp["PublicIp"], labels[i])
+        logger.info("  HCX EIPs already allocated: %s", existing_alloc_ids[:3])
+        return existing_alloc_ids[:3]
 
-    return {
-        "cidr": cidr,
-        "eip_allocation_ids": eip_allocation_ids,
-        "ipam_pool_id": pool_id,
-    }
+    eip_allocation_ids = list(existing_alloc_ids)
+    for i, ip in enumerate(usable_ips):
+        if i < len(existing_alloc_ids):
+            continue
+        kwargs = {
+            "Domain": "vpc",
+            "Address": ip,
+            "TagSpecifications": [{
+                "ResourceType": "elastic-ip",
+                "Tags": [{"Key": "Name", "Value": f"{tag_name}-{labels[i]}"}],
+            }],
+        }
+        if ipam_pool_id:
+            kwargs["IpamPoolId"] = ipam_pool_id
+        try:
+            resp = ec2.allocate_address(**kwargs)
+        except ec2.exceptions.ClientError as e:
+            raise RuntimeError(
+                f"Could not allocate HCX EIP {ip} from {cidr}: "
+                f"{_aws_error_code(e)}. EVS requires each HCX EIP to sit inside "
+                f"the HCX VLAN CIDR, so this address space must be allocatable in "
+                f"this account — an Amazon-provided range provisioned into an IPAM "
+                f"pool, or your own BYOIP range."
+            ) from e
+        eip_allocation_ids.append(resp["AllocationId"])
+        logger.info("  Allocated HCX EIP: %s (%s)", resp["PublicIp"], labels[i])
+
+    return eip_allocation_ids
 
 
 def stage_aws_config(config: dict, checkpoint: Checkpoint) -> dict:
@@ -2322,9 +2379,25 @@ def stage_aws_config(config: dict, checkpoint: Checkpoint) -> dict:
                     hcx["public_cidr"], len(hcx["eip_allocation_ids"]))
     elif hcx.get("enabled") and hcx.get("public_cidr"):
         # BYO path skips _provision_hcx_ipam, including the VPC CIDR association
-        # it does at step 4. EVS requires VLAN CIDRs to sit inside a VPC CIDR
-        # block, so without this CreateEnvironment fails validation.
+        # it does at step 4 and the in-CIDR EIP allocation at step 5. EVS requires
+        # VLAN CIDRs to sit inside a VPC CIDR block, AND each HCX EIP to sit inside
+        # the VLAN CIDR, so both must happen here too — otherwise the infra stack
+        # falls back to a standard-pool EIP and AssociateEipToVlan fails with
+        # "IP address X is not within the VLAN CIDR block".
         _associate_hcx_cidr_with_vpc(config, hcx["public_cidr"])
+        _byo_cidr = hcx["public_cidr"]
+        _byo_ec2 = boto3.Session(
+            profile_name=config["aws"].get("profile"),
+            region_name=config["aws"]["region"],
+        ).client("ec2")
+        hcx["eip_allocation_ids"] = _allocate_hcx_eips_in_cidr(
+            _byo_ec2, _byo_cidr,
+            f"EVS-HCX-{_aws_config_stack_name(config)}",
+            ipam_pool_id=_resolve_ipam_pool_for_cidr(_byo_ec2, _byo_cidr),
+        )
+        config["hcx"] = hcx
+        logger.info("aws_config: BYO HCX CIDR %s — allocated %d EIP(s) inside it",
+                    _byo_cidr, len(hcx["eip_allocation_ids"]))
 
     cfn = _aws_config_cfn(config)
     stack_name = _aws_config_stack_name(config)
