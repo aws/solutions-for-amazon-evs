@@ -3961,19 +3961,19 @@ def main():
                     "Networking, deployment config, and DNS validation are "
                     "complete.\n\n"
                     "Next: creating the EVS environment and provisioning the "
-                    "bare-metal ESXi hosts -- this typically takes about 30-90 "
+                    "bare-metal ESXi hosts -- this typically takes about 45-100 "
                     "minutes.\n\n"
                     "No action needed.",
                 )
             elif stage_id == "esxi_ova_verify":
                 _notify(
                     config,
-                    "Infrastructure ready - starting VCF bringup (~2-4h)",
+                    "Infrastructure ready - starting VCF bringup (~3-5.5h)",
                     "All pre-bringup steps are complete: the EVS environment is "
                     "created, the bare-metal hosts are up, and the SDDC Manager "
                     "OVA has been deployed and verified.\n\n"
                     "Now starting the longest phase -- VCF bringup and the NSX "
-                    "edge cluster (about 3-5 hours). You'll get a progress "
+                    "edge cluster (about 3-5.5 hours). You'll get a progress "
                     "update roughly every 2 hours until it completes.\n\n"
                     "No action needed.",
                 )
