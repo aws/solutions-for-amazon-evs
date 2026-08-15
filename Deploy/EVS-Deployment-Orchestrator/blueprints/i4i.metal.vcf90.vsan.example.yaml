@@ -22,7 +22,7 @@ evs:
 
 sizing:
   vcenter_size: "small"                    # tiny / small / medium / large / xlarge
-  vcenter_storage_size: "lstorage"         # vSAN datastore sizing: lstorage / xlstorage
+  vcenter_storage_size: "lstorage"         # vCenter appliance disk size, NOT vSAN capacity: lstorage / xlstorage
   nsx_size: "medium"                       # medium / large / xlarge
   operations_appliance_size: "medium"      # simple mode: xsmall..xlarge  |  HA mode: medium / large / xlarge
   operations_collector_appliance_size: "small"   # small / standard

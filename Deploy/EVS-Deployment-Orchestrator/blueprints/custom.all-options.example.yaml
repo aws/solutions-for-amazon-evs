@@ -41,7 +41,9 @@
 
 # sizing:                                   # REQUIRED block — every field below must be set (no defaults).
 #   vcenter_size: "small"                   # REQUIRED. tiny / small / medium / large / xlarge
-#   vcenter_storage_size: "lstorage"        # REQUIRED. vSAN datastore sizing: lstorage / xlstorage
+#   vcenter_storage_size: "lstorage"        # REQUIRED. vCenter appliance disk size: lstorage / xlstorage.
+#                                           #   Sizes the vCenter VM's own disks, NOT the vSAN datastore —
+#                                           #   vSAN capacity comes from the hosts' NVMe and host count.
 #   nsx_size: "medium"                      # REQUIRED. medium / large / xlarge
 #   operations_appliance_size: "medium"     # REQUIRED. simple mode: xsmall..xlarge  |  HA mode: medium / large / xlarge
 #   operations_collector_appliance_size: "small"   # REQUIRED. small / standard
