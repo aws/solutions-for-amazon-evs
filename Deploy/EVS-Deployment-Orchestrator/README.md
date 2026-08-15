@@ -278,8 +278,8 @@ start / stage / success / failure notifications.
 
 A normal deployment takes 4–7 hours and individual stages are legitimately slow
 — bare-metal host creation is typically 45–100 minutes, and VCF bringup plus the
-NSX edge cluster 3–5.5 hours — so long
-gaps with no output are expected. What to look for instead:
+NSX edge cluster 3–5.5 hours — so long gaps with no output are expected. What to
+look for instead:
 
 | Signal | Meaning |
 |--------|---------|
