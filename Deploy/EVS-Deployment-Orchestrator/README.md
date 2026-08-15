@@ -2,7 +2,7 @@
 
 Deploy a fully-configured VMware Cloud Foundation 9 environment on Amazon EVS by
 launching a single CloudFormation stack and letting the automation run to
-completion (~4-6 hours). No Terraform, no manual multi-phase workflow — you fill
+completion (~4-7 hours). No Terraform, no manual multi-phase workflow — you fill
 in a few parameters, launch one stack, and it builds everything end to end.
 
 What normally takes days of coordinated networking, host provisioning, and VCF
@@ -16,7 +16,7 @@ you — it builds the network, provisions the bare-metal ESXi hosts into your
 account, and installs
 and configures all of VMware Cloud Foundation (vCenter, NSX, SDDC Manager, VCF
 Operations). You don't run any of the steps yourself; you just watch the
-progress. It takes about **4-6 hours**, and when it finishes you have a
+progress. It takes about **4-7 hours**, and when it finishes you have a
 ready-to-use VCF environment. To remove everything later, you run **one teardown
 command**.
 
@@ -69,7 +69,7 @@ the secret, customizing the blueprint, and launching.
    gateway, DNS zones, Route Server, security group). It completes within a
    few minutes. You never need to touch this stack — and don't delete it
    manually (teardown handles it).
-4. **The deployment runs unattended for ~4-6 hours.** Bare-metal hosts are
+4. **The deployment runs unattended for ~4-7 hours.** Bare-metal hosts are
    provisioned (~50 minutes into the process, with billing commencing at that time), VCF is installed and
    configured, and the NSX edge cluster is deployed.
 5. **Monitor progress in CloudWatch Logs** — open the `OrchestratorLogsUrl`
@@ -276,7 +276,7 @@ start / stage / success / failure notifications.
 
 ### Telling "failed" apart from "still working"
 
-A normal deployment takes 4–6 hours and individual stages are legitimately slow
+A normal deployment takes 4–7 hours and individual stages are legitimately slow
 — host creation is typically 30–90 minutes and VCF bringup 2–4 hours — so long
 gaps with no output are expected. What to look for instead:
 

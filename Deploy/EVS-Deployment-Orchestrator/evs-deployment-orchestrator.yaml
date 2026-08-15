@@ -2,7 +2,7 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
   Amazon EVS Deployment Orchestrator. Creates a runner instance that preflights
   your account, downloads your blueprint, and deploys a complete VCF environment
-  on EVS unattended — expect about 4-6 hours end to end. Requires a blueprint,
+  on EVS unattended — expect about 4-7 hours end to end. Requires a blueprint,
   VCF Installer OVA, and ovftool — all referenced by S3 URI (see the blueprints/
   folder). Networking, DNS, Route Server, the EVS environment, and VCF bringup
   are all handled by the orchestrator. Set a notification topic below to get

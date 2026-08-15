@@ -3917,9 +3917,9 @@ def main():
         _vcf_version = config.get("evs", {}).get("vcf_version", "9.x")
         _notify(
             config,
-            "Deployment started - about 4-6 hours",
+            "Deployment started - about 4-7 hours",
             f"Your Amazon EVS + VCF {_vcf_version} deployment has started and "
-            f"runs fully unattended (about 4-6 hours total).\n\n"
+            f"runs fully unattended (about 4-7 hours total).\n\n"
             "You'll get an email at each major point: when preparation is done "
             "(environment + host creation begins), when all pre-bringup steps "
             "finish (VCF bringup begins), roughly every 2 hours during the long "

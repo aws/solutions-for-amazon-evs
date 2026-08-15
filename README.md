@@ -8,7 +8,7 @@ This repository contains automation solutions for [Amazon Elastic VMware Service
 
 | Solution | Description |
 |----------|-------------|
-| [EVS Deployment Orchestrator](Deploy/EVS-Deployment-Orchestrator/) | Automated, single-CloudFormation-stack VCF 9 install — fill in a few parameters, launch one stack, and it builds a complete Amazon EVS + VCF 9.0 or 9.1 environment end-to-end (AWS networking, bare-metal ESXi hosts, vCenter/NSX/SDDC Manager/VCF Operations, and an NSX edge cluster) unattended in ~4–6 hours. |
+| [EVS Deployment Orchestrator](Deploy/EVS-Deployment-Orchestrator/) | Automated, single-CloudFormation-stack VCF 9 install — fill in a few parameters, launch one stack, and it builds a complete Amazon EVS + VCF 9.0 or 9.1 environment end-to-end (AWS networking, bare-metal ESXi hosts, vCenter/NSX/SDDC Manager/VCF Operations, and an NSX edge cluster) unattended in ~4–7 hours. |
 | [VCF 9 Phased Deployment](Deploy/VCF9-Phased-Deployment/) | Terraform-based automation for provisioning an Amazon EVS environment and deploying VMware Cloud Foundation 9.0 or 9.1 in discrete phases — AWS networking infrastructure, EVS environment creation, VCF bringup, and NSX edge cluster deployment. Use this when you want to run and inspect each phase yourself rather than launching a single unattended stack. |
 
 ### Why automate?
