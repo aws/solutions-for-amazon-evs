@@ -59,7 +59,23 @@ class EdgeClusterSpec:
     _T1_FAILOVER_MODE = "NON_PREEMPTIVE"
     _EDGE_CLUSTER_LOCAL_ASN = 65000
     _BGP_REMOTE_ASN = 65022
-    _MTU = 1500
+    # MTU for the edge uplink profile, which governs the edge nodes' TEP
+    # interface (_EDGE_TEP_VLAN below) where NSX applies Geneve encapsulation.
+    # Geneve adds ~50-100 bytes, so a 1500-byte TEP MTU silently drops or
+    # fragments full-size guest frames -- overlay traffic appears to work for
+    # small packets (ping, SSH handshake) and stalls on bulk transfers.
+    #
+    # 8500 matches: AWS's documented EVS VLAN table (jumbo frames on the
+    # vMotion, vSAN and overlay/TEP networks), Broadcom's NSX overlay minimum
+    # of 1600 (1700 recommended), and EVS's own canary, which sets
+    # mtu=8500 with transport_vlan=<edge TEP> and overlay_encap=GENEVE
+    # (AWSPromenadSystemTests, branch ga,
+    # .../vcf9/steps/nsx/NsxTransportInfra.java step2CreateUplinkProfile).
+    #
+    # Note this is NOT the Tier-0 external uplink interface, which is routed
+    # north-south over _UPLINK_VLAN and is correctly 1500 (the canary sets 1500
+    # there in NsxGatewayConfig.java) -- we don't set that value at all.
+    _MTU = 8500
 
     # VLANs — canonical VLAN IDs AWS Elastic VMware Service hardcodes on every
     # environment. NOT chosen per deployment (the third-octet-of-CIDR

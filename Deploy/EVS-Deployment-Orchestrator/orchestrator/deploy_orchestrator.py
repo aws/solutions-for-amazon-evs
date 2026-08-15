@@ -288,6 +288,14 @@ def generate_config_json(config: dict) -> Path:
     if hcx.get("enabled"):
         config_json["hcxPublic"] = True
         config_json["hcxEipAllocationId"] = hcx["eip_allocation_id"]
+        # Every allocated EIP must be associated, not just the first. HCX needs
+        # a public address per appliance -- Manager and Interconnect (HCX-IX) at
+        # minimum, plus one per Network Extension appliance -- and AWS documents
+        # "You associate each Elastic IP that you want to use with an HCX
+        # appliance to the HCX VLAN subnet". Associating only one leaves HCX-IX
+        # without a public IP, so internet-based migration cannot work.
+        if hcx.get("eip_allocation_ids"):
+            config_json["hcxEipAllocationIds"] = list(hcx["eip_allocation_ids"])
 
     GENERATED_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     GENERATED_CONFIG_PATH.write_text(json.dumps(config_json, indent=2) + "\n")

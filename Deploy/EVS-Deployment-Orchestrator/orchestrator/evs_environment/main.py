@@ -649,25 +649,35 @@ def run_associate_hcx_eip(
     config: dict,
     dry_run: bool,
 ) -> int:
-    """Associate the pre-allocated EIP with the HCX VLAN.
+    """Associate every pre-allocated EIP with the HCX VLAN.
 
-    Only runs when ``hcxPublic`` is true and ``hcxEipAllocationId`` is
-    present in config (both populated by ``pre-evs-sync-config`` from the
-    Phase 1 Terraform outputs). Finds the HCX VLAN by listing the
-    environment's VLANs and matching ``functionName == 'hcx'``.
+    Only runs when ``hcxPublic`` is true. HCX needs one public address per
+    appliance -- HCX Manager and HCX Interconnect (HCX-IX) at minimum, plus one
+    per Network Extension appliance -- and AWS documents "You associate each
+    Elastic IP that you want to use with an HCX appliance to the HCX VLAN
+    subnet". Associating only the first would leave HCX-IX without a public IP,
+    so internet-based migration could not work.
 
-    Idempotent: EVS returns success if the EIP is already associated.
+    Reads ``hcxEipAllocationIds`` (all allocated EIPs) and falls back to the
+    singular ``hcxEipAllocationId`` for a config written by an older run.
+
+    Idempotent: EIPs already present in the VLAN's ``eipAssociations`` are
+    skipped, so a ``--resume`` does not re-associate or error.
     """
     if not config.get("hcxPublic"):
         logger.info("HCX public not enabled; skipping EIP association")
         return 0
 
-    eip_alloc_id = config.get("hcxEipAllocationId")
-    if not eip_alloc_id:
+    alloc_ids = list(config.get("hcxEipAllocationIds") or [])
+    if not alloc_ids:
+        single = config.get("hcxEipAllocationId")
+        if single:
+            alloc_ids = [single]
+    if not alloc_ids:
         logger.error(
-            "hcxPublic is true but hcxEipAllocationId is missing from "
-            "config. Ensure the aws_config stage provisioned the HCX "
-            "public EIP (it sets hcxEipAllocationId)."
+            "hcxPublic is true but no HCX EIP allocation ids are present in "
+            "config (expected hcxEipAllocationIds, or hcxEipAllocationId). "
+            "Ensure the aws_config stage provisioned the HCX public EIPs."
         )
         return 1
 
@@ -680,21 +690,51 @@ def run_associate_hcx_eip(
 
     if dry_run:
         logger.info(
-            "DRY RUN — would associate EIP %s with HCX VLAN 'hcx' "
+            "DRY RUN — would associate %d EIP(s) %s with HCX VLAN 'hcx' "
             "in environment %s",
-            eip_alloc_id, env_id,
+            len(alloc_ids), alloc_ids, env_id,
         )
         return 0
 
-    evs.associate_eip_to_vlan(
-        environment_id=env_id,
-        vlan_name="hcx",
-        allocation_id=eip_alloc_id,
-    )
-    logger.info(
-        "EIP %s associated with HCX VLAN in environment %s",
-        eip_alloc_id, env_id,
-    )
+    # Skip any EIP the VLAN already carries, so --resume is a no-op.
+    already: set[str] = set()
+    try:
+        for vlan in evs.list_environment_vlans(env_id):
+            if (vlan.get("functionName") or "").lower() != "hcx":
+                continue
+            for assoc in vlan.get("eipAssociations") or []:
+                if assoc.get("allocationId"):
+                    already.add(assoc["allocationId"])
+    except Exception as e:  # noqa: BLE001 — best-effort pre-check
+        logger.info("Could not read existing HCX EIP associations (%s); "
+                    "attempting all associations", e)
+
+    associated = 0
+    for alloc_id in alloc_ids:
+        if alloc_id in already:
+            logger.info("EIP %s already associated with the HCX VLAN; skipping",
+                        alloc_id)
+            associated += 1
+            continue
+        evs.associate_eip_to_vlan(
+            environment_id=env_id,
+            vlan_name="hcx",
+            allocation_id=alloc_id,
+        )
+        logger.info(
+            "EIP %s associated with HCX VLAN in environment %s",
+            alloc_id, env_id,
+        )
+        associated += 1
+
+    logger.info("HCX VLAN has %d associated EIP(s) in environment %s",
+                associated, env_id)
+    if associated < 2:
+        logger.warning(
+            "Only %d EIP is associated with the HCX VLAN. HCX Manager and "
+            "HCX-IX each need their own public address, so internet-based "
+            "migration is likely to fail with fewer than 2.", associated,
+        )
     return 0
 
 
