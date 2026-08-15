@@ -182,6 +182,25 @@ class Phase2Sync:
 
         return missing
 
+    def _find_hcx_vlan_subnet_id(self) -> str | None:
+        """Return the subnet ID of the 'hcx' VLAN, or None if absent.
+
+        Identified by functionName rather than position, since VLAN ordering is
+        not guaranteed. Only the public HCX VLAN needs this; the caller decides
+        whether to use it based on hcxPublic.
+        """
+        for vlan in self._evs.list_environment_vlans(self._environment_id):
+            if (vlan.get("functionName") or "").lower() != "hcx":
+                continue
+            if vlan.get("vlanState") != "CREATED":
+                logger.warning(
+                    "hcx VLAN subnet %s is in state %s (not CREATED)",
+                    vlan.get("subnetId"), vlan.get("vlanState"),
+                )
+                return None
+            return vlan.get("subnetId")
+        return None
+
     def sync(self, dry_run: bool = False) -> dict[str, Any]:
         """Look up the host + VLAN subnets and write the Phase 2 tfvars file."""
         host_info = self._find_evs_host_instance()
@@ -209,6 +228,22 @@ class Phase2Sync:
             "service_access_route_table_id": route_table_id,
             "evs_vlan_subnet_ids": vlan_subnet_ids,
         }
+
+        # The public HCX VLAN must be associated with an IGW-routed route table,
+        # not the NAT-routed service-access table, so it needs to be identified
+        # separately from the rest. Only relevant when HCX public connectivity
+        # is enabled; a private HCX VLAN belongs on the service-access table
+        # like every other VLAN.
+        if self._config.get("hcxPublic"):
+            hcx_subnet_id = self._find_hcx_vlan_subnet_id()
+            if hcx_subnet_id:
+                tfvars["hcx_public_vlan_subnet_id"] = hcx_subnet_id
+                tfvars["public_subnet_id"] = self._config.get("publicSubnetId", "")
+            else:
+                logger.warning(
+                    "hcxPublic is set but no 'hcx' VLAN subnet was found; the "
+                    "HCX VLAN cannot be wired to a public route table"
+                )
 
         if dry_run:
             logger.info("DRY RUN — would write to %s:", self._output_path)

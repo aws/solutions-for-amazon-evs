@@ -583,19 +583,73 @@ def _load_phase2_tfvars() -> dict:
         return json.load(f)
 
 
+def _resolve_public_route_table(ec2, public_subnet_id: str, vpc_id: str) -> tuple[str, bool]:
+    """Return (route_table_id, has_igw_default) for the VPC's public subnet.
+
+    The public HCX VLAN subnet must be associated with a route table that
+    routes to an internet gateway. We know the public subnet in both
+    tool-created and BYO-VPC mode, but not its route table -- BYO-VPC callers
+    never supply one -- so resolve it here instead of adding a parameter.
+
+    Falls back to the VPC's main route table, which is what an unassociated
+    subnet actually uses. Also reports whether a 0.0.0.0/0 -> igw-* route is
+    present, so the caller can fail with a clear reason rather than leaving HCX
+    to break hours later.
+    """
+    tables = ec2.describe_route_tables(
+        Filters=[{"Name": "association.subnet-id", "Values": [public_subnet_id]}]
+    ).get("RouteTables", [])
+    if not tables:
+        # No explicit association: the subnet uses the VPC main route table.
+        tables = [
+            t for t in ec2.describe_route_tables(
+                Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]
+            ).get("RouteTables", [])
+            if any(a.get("Main") for a in t.get("Associations") or [])
+        ]
+        if tables:
+            logger.info(
+                "Public subnet %s has no explicit route table association; "
+                "using the VPC main route table %s",
+                public_subnet_id, tables[0]["RouteTableId"],
+            )
+    if not tables:
+        raise RuntimeError(
+            f"Could not resolve a route table for public subnet "
+            f"{public_subnet_id} in {vpc_id}."
+        )
+
+    rtb = tables[0]
+    has_igw = any(
+        r.get("DestinationCidrBlock") == "0.0.0.0/0"
+        and str(r.get("GatewayId") or "").startswith("igw-")
+        for r in rtb.get("Routes") or []
+    )
+    return rtb["RouteTableId"], has_igw
+
+
 def run_associate_vlan_subnets(
     aws: AWSClient,
     args: argparse.Namespace,
     *,
     tfvars: dict | None = None,
 ) -> int:
-    """Associate every EVS VLAN subnet with the service-access route table.
+    """Associate every EVS VLAN subnet with the correct route table.
+
+    EVS implicitly associates new VLAN subnets with the VPC's main route table
+    and documents that you must then associate them explicitly. Every VLAN goes
+    on the service-access (NAT-routed) table, EXCEPT a public HCX VLAN: AWS
+    requires that one to be "explicitly associated with a public route table in
+    your VPC that routes to an internet gateway". On a NAT-routed table the HCX
+    appliances' replies would be SNATed to the NAT gateway's address, so peers
+    would see traffic from the wrong source IP -- and HCX does not support NAT
+    on its uplink.
 
     Replaces the ``vlan_route_associations`` Terraform module. Idempotent:
-    subnets already associated are skipped. Tolerates the brief window
-    after EVS reports a subnet ``CREATED`` but AWS-side propagation
-    hasn't surfaced it to ``DescribeRouteTables`` yet — retries with
-    exponential backoff before giving up.
+    subnets already associated are skipped. Tolerates the brief window after EVS
+    reports a subnet ``CREATED`` but AWS-side propagation hasn't surfaced it to
+    ``DescribeRouteTables`` yet -- retries with exponential backoff before
+    giving up.
 
     Args:
         aws: AWSClient.
@@ -609,6 +663,8 @@ def run_associate_vlan_subnets(
 
     route_table_id = tfvars.get("service_access_route_table_id") or ""
     subnet_ids = tfvars.get("evs_vlan_subnet_ids") or []
+    hcx_subnet_id = tfvars.get("hcx_public_vlan_subnet_id") or ""
+    public_subnet_id = tfvars.get("public_subnet_id") or ""
 
     if not route_table_id:
         logger.error(
@@ -625,12 +681,56 @@ def run_associate_vlan_subnets(
         )
         return 1
 
-    associator = VlanRouteTableAssociator(aws.client("ec2"))
+    ec2 = aws.client("ec2")
+    associator = VlanRouteTableAssociator(ec2)
+
+    # Route the public HCX VLAN via the internet gateway, everything else via
+    # the service-access table.
+    hcx_route_table_id = ""
+    if hcx_subnet_id:
+        if not public_subnet_id:
+            logger.error(
+                "A public HCX VLAN subnet (%s) needs an IGW-routed route "
+                "table, but no public_subnet_id is available to resolve one "
+                "from. HCX internet connectivity would not work.", hcx_subnet_id,
+            )
+            return 1
+        vpc_id = tfvars.get("vpc_id") or ""
+        if not vpc_id:
+            vpc_id = ec2.describe_subnets(
+                SubnetIds=[public_subnet_id]
+            )["Subnets"][0]["VpcId"]
+        hcx_route_table_id, has_igw = _resolve_public_route_table(
+            ec2, public_subnet_id, vpc_id,
+        )
+        if not has_igw:
+            logger.error(
+                "Route table %s (for public subnet %s) has no 0.0.0.0/0 route "
+                "to an internet gateway. AWS requires the public HCX VLAN "
+                "subnet to be associated with an IGW-routed table, so HCX "
+                "internet connectivity cannot work. Add an internet gateway "
+                "default route to that table, or disable hcx in the blueprint.",
+                hcx_route_table_id, public_subnet_id,
+            )
+            return 1
+        subnet_ids = [s for s in subnet_ids if s != hcx_subnet_id]
+        logger.info(
+            "Public HCX VLAN subnet %s will use IGW-routed table %s; "
+            "%d other VLAN subnet(s) will use %s",
+            hcx_subnet_id, hcx_route_table_id, len(subnet_ids), route_table_id,
+        )
+
     associations = associator.associate_subnets(
         route_table_id=route_table_id,
         subnet_ids=subnet_ids,
         dry_run=args.dry_run,
     )
+    if hcx_subnet_id and hcx_route_table_id:
+        associator.associate_subnets(
+            route_table_id=hcx_route_table_id,
+            subnet_ids=[hcx_subnet_id],
+            dry_run=args.dry_run,
+        )
     if args.dry_run:
         logger.info(
             "DRY RUN — would associate %d subnet(s) with %s",

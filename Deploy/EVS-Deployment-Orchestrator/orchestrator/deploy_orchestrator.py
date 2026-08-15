@@ -237,6 +237,10 @@ def generate_config_json(config: dict) -> Path:
         "vpcId": vpc["id"],
         "serviceAccessSubnetId": vpc["service_access_subnet_id"],
         "serviceAccessRouteTableId": vpc["service_access_route_table_id"],
+        # Needed to resolve the IGW-routed public route table at runtime: the
+        # HCX public VLAN subnet must be associated with it, not the
+        # NAT-routed service-access table (see run_associate_vlan_subnets).
+        "publicSubnetId": vpc.get("public_subnet_id", ""),
         "serviceAccessSecurityGroups": {
             "securityGroups": [vpc["security_group_id"]],
         },
