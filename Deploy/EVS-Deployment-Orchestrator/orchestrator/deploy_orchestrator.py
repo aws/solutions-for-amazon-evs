@@ -3973,7 +3973,7 @@ def main():
                     "created, the bare-metal hosts are up, and the SDDC Manager "
                     "OVA has been deployed and verified.\n\n"
                     "Now starting the longest phase -- VCF bringup and the NSX "
-                    "edge cluster (about 2-4 hours). You'll get a progress "
+                    "edge cluster (about 3-5 hours). You'll get a progress "
                     "update roughly every 2 hours until it completes.\n\n"
                     "No action needed.",
                 )

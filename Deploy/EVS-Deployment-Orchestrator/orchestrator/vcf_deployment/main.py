@@ -153,7 +153,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="For sync-depot, download-bundle, download-all-product-binaries, "
              "and start-bringup: block until the operation reaches a "
              "terminal state. start-bringup polls every 10 minutes (a "
-             "bringup typically runs 2-4 hours).",
+             "bringup typically runs 2-4.5 hours).",
     )
     parser.add_argument(
         "--bundle-id",
@@ -1511,7 +1511,7 @@ def _handle_pipeline(args: argparse.Namespace) -> int:
       1. ``prepare-depot`` — configure the Broadcom token, sync the depot,
          download all INSTALL bundles for ``--target-version``. Total: 30-60 min.
       2. ``start-bringup --wait`` — POST the bringup spec, then poll the
-         workflow every 10 minutes until it terminates. Total: 2-4 hours.
+         workflow every 10 minutes until it terminates. Total: 2-4.5 hours.
       3. ``remove-installer-datastore`` — storage-vMotion any VMs off
          the local installer VMFS to vSAN, then unmount the datastore.
          Total: 5-10 min depending on VM size.
@@ -1526,7 +1526,7 @@ def _handle_pipeline(args: argparse.Namespace) -> int:
          EVS via CreateEnvironmentConnector. Polls until ACTIVE.
          Total: ~2-5 min.
 
-    Total runtime: ~3-5 hours, dominated by step 2 (bringup).
+    Total runtime: ~3-5.5 hours, dominated by step 2 (bringup).
 
     Required flags / env vars:
       - ``--installer-host``, ``$VCF_INSTALLER_PASSWORD``,

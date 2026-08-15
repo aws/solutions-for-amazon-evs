@@ -53,7 +53,7 @@ class AWSClient:
 
         Assumed-role credentials are REFRESHABLE: a one-shot
         ``sts.assume_role()`` gives static creds with a 1-hour lifetime that
-        would raise ExpiredTokenException partway through this tool's 4-6 hour
+        would raise ExpiredTokenException partway through this tool's 4-7 hour
         unattended deployment. RefreshableCredentials re-assumes the role
         before expiry on every subsequent call.
         """

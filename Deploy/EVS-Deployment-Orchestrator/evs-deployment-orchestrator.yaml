@@ -898,7 +898,7 @@ Outputs:
     Description: Watch deployment status via the evs-deployment tag on this instance.
     Value: !Ref RunnerInstance
   OrchestratorLogsUrl:
-    Description: Live deployment log (the ~4-hour story).
+    Description: Live deployment log (the multi-hour story, typically 4-7 hours).
     Value: !Sub
       - "https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#logsV2:log-groups/log-group/${LogGroupEncoded}"
       - LogGroupEncoded: !Join ["$252F", !Split ["/", !Ref OrchestratorLogGroup]]

@@ -541,7 +541,7 @@ class BringupManager:
     def _wait_for_terminal(self, workflow_id: str) -> dict[str, Any]:
         """Poll a bringup workflow every 10 minutes until it terminates.
 
-        Bringup runs 2-4 hours; the 10-minute cadence keeps log volume sane.
+        Bringup runs 2-4.5 hours; the 10-minute cadence keeps log volume sane.
 
         Classification is by EXACT match against the success/failure sets,
         NOT substring: a naive ``"SUCCESS" in status`` would match
@@ -563,7 +563,7 @@ class BringupManager:
         (network blips, RuntimeError) keep the "log + retry" behavior.
         """
         poll_interval_seconds = 600  # 10 minutes
-        # No hard timeout — bringup can run 2-4 hours and is the longest
+        # No hard timeout — bringup can run 2-4.5 hours and is the longest
         # blocking operation in the whole pipeline. The operator can
         # ctrl-C and resume polling with ``check-bringup`` if needed.
 
