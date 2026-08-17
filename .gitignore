@@ -1,0 +1,8 @@
+# Private keys. The README's runner-SSH and Windows-jumpbox steps write
+# runner-key.pem / jumpbox-key.pem into the working directory, which is inside
+# this cloned repo -- never let one be committed.
+*.pem
+*.key
+
+# Orchestrator dependency-bootstrap marker (created on the runner).
+.evs_orchestrator_deps_installed

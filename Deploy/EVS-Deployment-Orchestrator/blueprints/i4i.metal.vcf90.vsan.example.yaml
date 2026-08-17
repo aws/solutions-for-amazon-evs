@@ -1,0 +1,60 @@
+# EVS Automated Install — ready-to-go blueprint
+# i4i.metal  ·  VCF 9.0.2  ·  vSAN storage  ·  single-site (simple), 3 hosts
+#
+# TO USE: change the two "CHANGE ME" values below (dns.fqdn and evs.environment_name),
+# then point the CloudFormation "BlueprintKey" parameter at this file's S3 URI. Everything
+# else has sensible defaults — leave as-is or tweak. (The OVA + ovftool are the OvaKey/OvfKey
+# stack parameters and are NOT set in the blueprint.)
+
+dns:
+  fqdn: "vcf.example.internal"             # CHANGE ME — any private domain you like (a private DNS zone is auto-created; nothing to register).
+                                            #   Rule: at least one dot, no trailing dot, each label letters/digits/hyphens
+                                            #   only (no leading/trailing hyphen). Keep it short — hostnames.vcenter/nsx/
+                                            #   sddc_manager below become "<name>.<fqdn>" with no combined-length check.
+
+evs:
+  environment_name: "my-vcf-env"           # CHANGE ME — a display name (letters, digits, hyphens, underscores).
+  instance_type: "i4i.metal"          # ESXi bare-metal host type for this blueprint (128 vCPUs each).
+  vcf_version: "9.0.2"                   # VCF version for this blueprint.
+  terms_accepted: true                     # Required — EVS terms acceptance.
+  simple_deployment: true                  # true = single NSX Manager (lab/demo). For the production HA shape
+                                            #   (3-node NSX cluster) set this to false AND use 4+ hosts below.
+
+sizing:
+  vcenter_size: "small"                    # tiny / small / medium / large / xlarge
+  vcenter_storage_size: "lstorage"         # vCenter appliance disk size, NOT vSAN capacity: lstorage / xlstorage
+  nsx_size: "medium"                       # medium / large / xlarge
+  operations_appliance_size: "medium"      # simple mode: xsmall..xlarge  |  HA mode: medium / large / xlarge
+  operations_collector_appliance_size: "small"   # small / standard
+  edge_form_factor: "LARGE"                # SMALL / MEDIUM / LARGE / XLARGE
+
+hostnames:
+  # ── HOW TO ADD / REMOVE HOSTS ────────────────────────────────────────────────
+  #   Edit this list to change how many ESXi hosts you get:
+  #     • simple_deployment: true   → minimum 3 hosts
+  #     • simple_deployment: false  → minimum 4 hosts (HA)
+  #     • Add entries for more capacity, e.g. ["esxi01","esxi02","esxi03","esxi04","esxi05"]
+  #   Each host is one bare-metal server — i4i.metal = 128 vCPUs, i7i.metal-24xl = 96 vCPUs.
+  #   Make sure your EC2 vCPU quota (L-1216C47A) covers (number of hosts × vCPUs-per-host).
+  #
+  #   Hostname rules — esxi entries: 1-63 chars, letters/digits/hyphens only,
+  #   no leading/trailing hyphen, and each must be unique. vcenter/nsx/
+  #   sddc_manager (below) become DNS labels under dns.fqdn (e.g. vc.<fqdn>) —
+  #   follow the same rules even though they aren't locally re-validated.
+  # ─────────────────────────────────────────────────────────────────────────────
+  esxi: ["esxi01", "esxi02", "esxi03"]
+  vcenter: "vc"                            # short hostname for vCenter  -> vc.<fqdn>
+  nsx: "nsx"                               # short hostname for NSX Manager
+  sddc_manager: "sddcm"                    # short hostname for SDDC Manager
+
+jumpbox:
+  enabled: false                           # true = add a Windows jumpbox to reach the private VCF UIs (see README "Windows jumpbox").
+
+hcx:
+  enabled: false                           # true = enable VMware HCX (workload migration / network extension).
+  # public_cidr: "203.0.113.0/28"          # If HCX on: bring your own routable /28 (recommended);
+                                           #   omit to auto-provision an Amazon /28 via IPAM (max 2 per region).
+
+phase3:
+  ntp: ["time.aws.com"]                    # NTP servers for all VCF appliances.
+  ceip: false                              # VMware telemetry opt-in (true/false).

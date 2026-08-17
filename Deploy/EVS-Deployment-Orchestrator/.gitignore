@@ -1,0 +1,38 @@
+# Terraform
+*.tfstate
+*.tfstate.backup
+.terraform/
+*.auto.tfvars
+.terraform.lock.hcl
+*.tfvars
+.state/
+*.backup
+
+# Credentials and sensitive data
+*.pem
+*.key
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Orchestrator-generated files (contain env-specific settings/IDs)
+orchestrator/config.json
+orchestrator/orchestrator_state.json
+
+# Generated spec-generator output — contains plaintext appliance passwords,
+# must never be committed.
+spec-generator/*.json
+
+# Build artifacts
+build/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Security scanner artifacts
+.security-scan/
+.evs_orchestrator_deps_installed
+orchestrator.log
+deployment-tracker.md

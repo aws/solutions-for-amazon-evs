@@ -8,14 +8,15 @@ This repository contains automation solutions for [Amazon Elastic VMware Service
 
 | Solution | Description |
 |----------|-------------|
-| [VCF 9 Phased Deployment](Deploy/VCF9-Phased-Deployment/) | End-to-end automation for provisioning an Amazon EVS environment and deploying VMware Cloud Foundation 9.0 or 9.1, including AWS networking infrastructure, EVS environment creation, VCF bringup, and NSX edge cluster deployment. |
+| [EVS Deployment Orchestrator](Deploy/EVS-Deployment-Orchestrator/) | Automated, single-CloudFormation-stack VCF 9 install — fill in a few parameters, launch one stack, and it builds a complete Amazon EVS + VCF 9.0 or 9.1 environment end-to-end (AWS networking, bare-metal ESXi hosts, vCenter/NSX/SDDC Manager/VCF Operations, and an NSX edge cluster) unattended in ~4–7 hours. |
+| [VCF 9 Phased Deployment](Deploy/VCF9-Phased-Deployment/) | Terraform-based automation for provisioning an Amazon EVS environment and deploying VMware Cloud Foundation 9.0 or 9.1 in discrete phases — AWS networking infrastructure, EVS environment creation, VCF bringup, and NSX edge cluster deployment. Use this when you want to run and inspect each phase yourself rather than launching a single unattended stack. |
 
 ### Why automate?
 
-Installing VCF manually involves dozens of configuration steps, carefully crafted JSON specs, password generation, and multi-hour wait times. The automation toolkit presented here reduces that to three CLI commands:
+Installing VCF manually involves dozens of configuration steps, carefully crafted JSON specs, password generation, and multi-hour wait times. The automation toolkit presented here reduces that to a short, repeatable setup and a single CloudFormation stack launch:
 
 - **Repeatability** — Deploy identical environments across regions and accounts
-- **Speed** — Reduce a multi-hour manual process to three commands
+- **Speed** — Reduce a days-long manual process to one unattended stack launch
 - **Auditability** — Every configuration decision is captured in version-controlled code
 - **Error reduction** — Eliminate manual typos in DNS records, VLAN CIDRs, and bringup specs
 - **Security** — Passwords generated automatically and stored in AWS Secrets Manager
