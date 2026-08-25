@@ -96,9 +96,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--instance-type",
-        choices=["i4i.metal", "i7i.metal-24xl"],
         default=None,
-        help="EC2 instance type for EVS hosts (required for create-hosts and create-environment-and-hosts)",
+        help="EC2 instance type for EVS hosts (required for create-hosts and create-environment-and-hosts). Validated at runtime against the instance types Amazon EVS supports (evs:GetVersions).",
     )
     parser.add_argument(
         "--dry-run",
@@ -280,6 +279,26 @@ def run_create_hosts(evs: EVSManager, config: dict, dry_run: bool, config_path: 
     """Handle the create-hosts action."""
     if not instance_type:
         logger.error("--instance-type is required for create-hosts")
+        return 1
+
+    # Validate the requested type against what Amazon EVS actually supports,
+    # sourced live from evs:GetVersions. This replaces a hardcoded allowlist:
+    # a newly launched EVS instance type is accepted automatically, and an
+    # unsupported one (e.g. a metal type EVS does not offer) fails here in
+    # seconds rather than ~50 minutes into host creation.
+    try:
+        supported = evs.get_supported_instance_types()
+    except Exception as e:  # noqa: BLE001 — validation must not mask a real API error silently
+        logger.error(
+            "Could not retrieve supported instance types from EVS "
+            "(evs:GetVersions): %s. Ensure the role has evs:GetVersions.", e
+        )
+        return 1
+    if instance_type not in supported:
+        logger.error(
+            "Instance type '%s' is not supported by Amazon EVS. "
+            "Supported types: %s", instance_type, supported
+        )
         return 1
 
     environment_id = config.get("environmentId")

@@ -106,6 +106,7 @@ class SddcSpecBuilder:
     # Rapids baseline, and its newer baseline masks nothing the VMs use.
     _EVC_MODE_BY_INSTANCE_TYPE = {
         "i7i.metal-24xl":  "INTEL_SAPPHIRERAPIDS",
+        "i7i.metal-48xl":  "INTEL_SAPPHIRERAPIDS",
     }
 
     _SUPPORTED_VERSION_PREFIXES = ("9.0", "9.1")
