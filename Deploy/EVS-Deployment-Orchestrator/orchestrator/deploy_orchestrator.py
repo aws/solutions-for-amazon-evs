@@ -2773,14 +2773,15 @@ def _validate_config(config: dict):
     ):
         errors.append(f"dns.fqdn must be a valid domain name with at least one dot, got: '{fqdn}'")
 
-    # evs.instance_type: must be a supported bare-metal type
+    # evs.instance_type: must look like a bare-metal EC2 type. The
+    # authoritative check — whether Amazon EVS actually supports this type —
+    # is done at host-creation time against evs:GetVersions (see
+    # evs_environment/main.py run_create_hosts), so a newly launched EVS
+    # instance type is accepted without a code change here. This static check
+    # only catches obviously malformed values in the blueprint.
     instance_type = evs.get("instance_type", "")
-    # Mirrors the InstanceType enum in the EVS API model. i7i.metal-48xl is
-    # NOT an EVS-supported type despite existing in EC2 -- CreateEnvironment
-    # rejects it, so catch it here rather than ~50 minutes in.
-    supported_instance_types = {"i4i.metal", "i7i.metal-24xl"}
-    if instance_type and instance_type not in supported_instance_types:
-        errors.append(f"evs.instance_type must be one of {sorted(supported_instance_types)}, got: '{instance_type}'")
+    if instance_type and not re.match(r"^[a-z0-9]+\.metal(-\d+xl)?$", instance_type):
+        errors.append(f"evs.instance_type must be a bare-metal EC2 instance type (e.g. 'i4i.metal', 'i7i.metal-24xl'), got: '{instance_type}'")
 
     # evs.vcf_version: must match X.Y.Z.W pattern AND start with a supported
     # major.minor prefix. New versions require code changes (bundle pins,
