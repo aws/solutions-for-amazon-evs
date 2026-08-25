@@ -102,6 +102,22 @@ class EVSManager:
 
         return response
 
+    def get_supported_instance_types(self) -> list[str]:
+        """Return the EC2 instance types Amazon EVS supports, from get-versions.
+
+        Sourced live from the API (the union across all VCF versions plus the
+        flat instance-type catalog), so a newly launched instance type is
+        picked up without a code change.
+        """
+        response = self._evs.get_versions()
+        supported: set[str] = set()
+        for entry in response.get("vcfVersions", []) or []:
+            supported.update(entry.get("instanceTypes", []))
+        for entry in response.get("instanceTypeEsxVersions", []) or []:
+            if entry.get("instanceType"):
+                supported.add(entry["instanceType"])
+        return sorted(supported)
+
     def get_latest_esx_version(self, target_version: str, instance_type: str) -> str:
         """Resolve the latest ESXi version from the EVS get-versions API.
 

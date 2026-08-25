@@ -2773,15 +2773,11 @@ def _validate_config(config: dict):
     ):
         errors.append(f"dns.fqdn must be a valid domain name with at least one dot, got: '{fqdn}'")
 
-    # evs.instance_type: must look like a bare-metal EC2 type. The
-    # authoritative check — whether Amazon EVS actually supports this type —
-    # is done at host-creation time against evs:GetVersions (see
-    # evs_environment/main.py run_create_hosts), so a newly launched EVS
-    # instance type is accepted without a code change here. This static check
-    # only catches obviously malformed values in the blueprint.
-    instance_type = evs.get("instance_type", "")
-    if instance_type and not re.match(r"^[a-z0-9]+\.metal(-\d+xl)?$", instance_type):
-        errors.append(f"evs.instance_type must be a bare-metal EC2 instance type (e.g. 'i4i.metal', 'i7i.metal-24xl'), got: '{instance_type}'")
+    # evs.instance_type is validated live against evs:GetVersions in
+    # _instance_type_preflight() (called from main() beside the vCPU
+    # preflight), not here — _validate_config is a pure, offline,
+    # credential-free config-shape check. Validating the type here would need
+    # an AWS client and the evs:GetVersions permission on every invocation.
 
     # evs.vcf_version: must match X.Y.Z.W pattern AND start with a supported
     # major.minor prefix. New versions require code changes (bundle pins,
@@ -3178,6 +3174,68 @@ def _vcpu_quota_preflight(config: dict) -> None:
         "vCPUs, %d/%d after launch",
         host_count, instance_type, already_created, remaining_needed,
         after, quota,
+    )
+
+
+def _instance_type_preflight(config: dict) -> None:
+    """Fail fast if evs.instance_type is not one Amazon EVS actually supports.
+
+    Authoritative check against the live ``evs:GetVersions`` catalog (the union
+    of every VCF version's ``instanceTypes`` plus the flat
+    ``instanceTypeEsxVersions`` list), so a newly launched EVS instance type is
+    accepted without a code change. Runs at the top of the deploy, beside the
+    vCPU preflight, so a typo'd or unsupported type is rejected in seconds
+    rather than after the environment is created a few stages in.
+
+    Unlike the vCPU preflight, a lookup failure here does NOT degrade to a skip:
+    if we cannot confirm the type is supported we would rather stop than let a
+    guaranteed-to-fail bring-up run for hours. The one exception is a missing
+    ``evs:GetVersions`` permission, which is a runner-role gap, not a bad
+    blueprint — that degrades to a warning so it never blocks a valid deploy.
+    """
+    instance_type = config.get("evs", {}).get("instance_type")
+    if not instance_type:
+        return  # required-key check already covered this
+
+    region = config["aws"]["region"]
+    try:
+        session = boto3.Session(
+            profile_name=config["aws"].get("profile"), region_name=region,
+        )
+        evs = session.client("evs")
+        resp = evs.get_versions()
+    except Exception as e:  # noqa: BLE001
+        if _aws_error_code(e) == "AccessDeniedException":
+            logger.warning(
+                "instance_type preflight skipped: the runner role lacks "
+                "evs:GetVersions, so '%s' cannot be validated up front. It "
+                "will still be checked at host-creation time. (%s)",
+                instance_type, e,
+            )
+            return
+        raise ValueError(
+            f"Could not validate evs.instance_type '{instance_type}' against "
+            f"evs:GetVersions in {region}: {e}. Fix the error above, or remove "
+            f"the instance_type from the blueprint to skip this preflight."
+        ) from e
+
+    supported: set[str] = set()
+    for entry in resp.get("vcfVersions", []) or []:
+        supported.update(entry.get("instanceTypes", []) or [])
+    for entry in resp.get("instanceTypeEsxVersions", []) or []:
+        if entry.get("instanceType"):
+            supported.add(entry["instanceType"])
+
+    if instance_type not in supported:
+        raise ValueError(
+            f"evs.instance_type '{instance_type}' is not supported by Amazon "
+            f"EVS in {region}. Supported types (from evs:GetVersions): "
+            f"{sorted(supported)}. Correct the blueprint and relaunch."
+        )
+
+    logger.info(
+        "instance_type preflight OK: '%s' is supported by Amazon EVS in %s",
+        instance_type, region,
     )
 
 
@@ -3838,6 +3896,10 @@ def main():
     if not args.destroy:
         try:
             _validate_config(config)
+            # Authoritative instance-type check against live evs:GetVersions.
+            # Runs unconditionally (even on --resume): it's a seconds-long
+            # read-only call, and a wrong instance_type is fatal in every mode.
+            _instance_type_preflight(config)
             # Skip vCPU preflight when resuming from a stage after phase2_deploy
             # (hosts already exist and are billing — the check would double-count them).
             phase2_idx = STAGE_IDS.index("phase2_deploy")

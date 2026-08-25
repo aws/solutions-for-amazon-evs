@@ -300,7 +300,7 @@ python -m src.main create-and-attach-ebs \
 | `--role-arn`      | No       | IAM role ARN to assume                                         |
 | `--config`        | Yes      | Path to the EVS environment config JSON                        |
 | `--tfstate`       | No       | Path to the Phase 1 terraform.tfstate (required for pre-evs-sync-config and deploy-environment) |
-| `--instance-type` | No       | EC2 instance type for EVS hosts (`i4i.metal` or `i7i.metal-24xl`) — required for create-hosts, create-environment-and-hosts, and deploy-environment |
+| `--instance-type` | No       | Bare-metal EC2 instance type for EVS hosts (e.g. `i4i.metal`, `i7i.metal-24xl`) — required for create-hosts, create-environment-and-hosts, and deploy-environment. Validated at runtime against the instance types Amazon EVS supports (`evs:GetVersions`). |
 | `--dry-run`       | No       | Show payload without calling the API or writing files          |
 
 The AWS region is read from the `region` field in `config.json` (populated by `pre-evs-sync-config`).
