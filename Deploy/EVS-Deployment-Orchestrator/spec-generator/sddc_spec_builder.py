@@ -93,9 +93,9 @@ def _gather_answers():
         default="i4i.metal",
     )
     answers["instance_type"] = "" if instance_type == "none" else instance_type
-    # i4i.metal is a valid EVS instance type but takes NO EVC mode on 9.1;
-    # only i7i.metal-24xl maps to one. Resolve via .get so a no-EVC type
-    # prints "none" instead of raising KeyError.
+    # i4i.metal is a valid EVS instance type but takes NO EVC mode; both
+    # i7i.metal-24xl and i7i.metal-48xl map to INTEL_SAPPHIRERAPIDS. Resolve
+    # via .get so a no-EVC type prints "none" instead of raising KeyError.
     evc_mode = (
         C.EVC_MODE_BY_INSTANCE_TYPE.get(answers["instance_type"])
         if answers["instance_type"] else None

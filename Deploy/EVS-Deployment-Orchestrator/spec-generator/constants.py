@@ -85,6 +85,7 @@ RESOURCE_POOL_TYPE = "management"
 # failure.
 EVC_MODE_BY_INSTANCE_TYPE = {
     "i7i.metal-24xl": "INTEL_SAPPHIRERAPIDS",
+    "i7i.metal-48xl": "INTEL_SAPPHIRERAPIDS",
 }
 
 # ESXi host credentials.
