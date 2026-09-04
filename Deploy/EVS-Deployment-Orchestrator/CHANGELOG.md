@@ -23,3 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Support for both VCF 9.0 and VCF 9.1 target versions
 - Deployment monitoring via CloudWatch Logs and optional SNS start/failure/success notifications (`SnsTopicArn`)
 - Resume support for failed deployment stages via the orchestrator's `--resume` flag on the runner
+
+### CI
+
+- Validate the post-merge full deployment end to end and exercise the
+  publish-to-public flow (opens a branch + PR on the public repo on success)
