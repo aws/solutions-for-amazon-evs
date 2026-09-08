@@ -2600,6 +2600,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Start (or resume) from this specific stage",
     )
     parser.add_argument(
+        "--stop-after",
+        default=None,
+        choices=STAGE_IDS,
+        help=(
+            "Run up to and including this stage, then stop cleanly. Used by CI "
+            "stack tests (--stop-after validate_dns) to exercise the landing "
+            "zone without creating an EVS environment or bare-metal hosts."
+        ),
+    )
+    parser.add_argument(
         "--skip-prework",
         action="store_true",
         default=False,
@@ -3968,6 +3978,7 @@ def main():
         return
 
     start_index = STAGE_IDS.index(args.start_from) if args.start_from else 0
+    stop_index = STAGE_IDS.index(args.stop_after) if args.stop_after else None
 
     # If aws_config already completed in a previous run (resume / --start-from),
     # its outputs (security group, route server endpoint IPs, key pair) must be
@@ -3991,6 +4002,16 @@ def main():
         )
 
     for i, (stage_id, stage_fn) in enumerate(STAGES):
+        if stop_index is not None and i > stop_index:
+            # The stop stage was already satisfied (it ran, or was skipped on a
+            # --resume where it was already completed). Stop here rather than
+            # running the rest -- the post-DONE check below handles the common
+            # "just ran the stop stage" case; this handles the skipped case.
+            logger.info(
+                "STOP-AFTER COMPLETE [%s] -- stop stage already satisfied; "
+                "not running %s or later (--stop-after)", args.stop_after, stage_id,
+            )
+            return
         if i < start_index:
             logger.info("SKIP  [%s] (before --start-from)", stage_id)
             continue
@@ -4009,6 +4030,15 @@ def main():
             )
             checkpoint.mark_completed(stage_id, result)
             logger.info("DONE  [%s] %s", stage_id, json.dumps(result, default=str))
+            if args.stop_after and stage_id == args.stop_after:
+                # Deliberate early stop. Distinct sentinel from ALL STAGES
+                # COMPLETE so the template watcher can treat it as success
+                # without waiting for a full deployment.
+                logger.info(
+                    "STOP-AFTER COMPLETE [%s] -- stopped before the remaining "
+                    "stages (--stop-after)", stage_id,
+                )
+                return
             # Curated customer notifications: stay quiet through the fast prep
             # and ESXi-prep stages, then send exactly two milestones -- one when
             # preparation is done (about to create the environment + hosts) and
