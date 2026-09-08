@@ -678,9 +678,7 @@ Resources:
                   --subject "EVS deployment $1" --message "$2" || true
               fi
             }
-            # fail() also fails the CloudFormation stack (CreationPolicy signal) so
-            # bad inputs surface as CREATE_FAILED in minutes, with the reason in
-            # both the stack events and CloudWatch ${BootstrapLogGroupName}.
+            # fail() also signals CloudFormation so bad inputs surface as CREATE_FAILED.
             fail() {
               echo "BOOTSTRAP FAILED: $1"
               notify FAILED "$1 (log: CloudWatch ${BootstrapLogGroupName}, instance $INSTANCE_ID)"
@@ -691,8 +689,7 @@ Resources:
             }
             retry() { local n=0; until "$@"; do n=$((n+1)); [ "$n" -ge 3 ] && return 1; echo "retry $n: $*"; sleep 10; done; }
 
-            # 0. Swap: the OVA deploy peaks memory; swap prevents OOM-kills on
-            #    smaller runner types.
+            # 0. Swap: the OVA deploy peaks memory; prevents OOM on small runners.
             fallocate -l 4G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile || echo "WARN: swap setup failed (continuing)"
 
             # 1. Runtime + CloudWatch log streaming
@@ -706,10 +703,8 @@ Resources:
             CWEOF
             /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/opt/aws/amazon-cloudwatch-agent/etc/config.json -s || true
 
-            # 2. Orchestrator source: git clone from the public repo at the ref
-            #    named by PINNED_COMMIT below.
-            #    NOTE: this block is inside Fn::Sub - bash variables here use
-            #    the $var form (no braces) so they aren't parsed as CFN subs.
+            # 2. Orchestrator source. Note: inside Fn::Sub, bash vars use $var
+            #    (no braces) so they aren't parsed as CFN substitutions.
             mkdir -p /opt/evs && cd /opt/evs
             # Tracks the main branch rather than an immutable SHA or tag, so a
             # freshly-merged fix reaches new deployments without a template
@@ -747,8 +742,7 @@ Resources:
             case "$OVFTOOL_OBJ_KEY" in *.msi) fail "OvfKey points at a Windows .msi but the runner is Linux - provide the Linux ovftool .zip" ;; esac
 
             # 5. Preflight: verify all three artifacts exist before the multi-hour
-            #    deploy. Capture stderr so a 403 (IAM/bucket policy) is reported
-            #    distinctly from a 404 (wrong URI), not one generic "not found".
+            #    deploy, distinguishing 403 (IAM) from 404 (wrong URI).
             check_s3_object() {
               local bucket="$1" key="$2" uri="$3" label="$4"
               local err
@@ -765,14 +759,11 @@ Resources:
             check_s3_object "$OVA_BUCKET" "$OVA_OBJ_KEY" "${OvaKey}" "VCF Installer OVA"
             check_s3_object "$OVFTOOL_BUCKET" "$OVFTOOL_OBJ_KEY" "${OvfKey}" "ovftool"
 
-            # 6. Download the blueprint (OVA/ovftool are downloaded later by
-            #    the orchestrator itself, from esxi_prework.ova_s3_uri /
-            #    ovftool_s3_uri, injected below).
+            # 6. Download the blueprint (OVA/ovftool fetched later by the orchestrator).
             retry aws s3 cp "s3://$BLUEPRINT_BUCKET/$BLUEPRINT_OBJ_KEY" ./blueprint.yaml --region ${AWS::Region} \
               || fail "blueprint download ${BlueprintKey} failed"
 
-            #    6b. Bare-metal capacity offered in this AZ (reads instance
-            #        type from the just-downloaded blueprint).
+            #    6b. Bare-metal capacity check for this AZ (instance type from blueprint).
             INSTANCE_TYPE=$(python3.11 -c "import yaml;print(yaml.safe_load(open('blueprint.yaml')).get('evs',{}).get('instance_type','i4i.metal'))" 2>/dev/null || echo "i4i.metal")
             METAL_OK=$(aws ec2 describe-instance-type-offerings --region ${AWS::Region} \
               --location-type availability-zone \
@@ -844,7 +835,8 @@ Resources:
             #    No start notification here: the orchestrator publishes its own
             #    "Deployment started" message moments later. The notify FAILED path
             #    above still covers a bootstrap that never reaches this point.
-            NOTIFICATION_TOPIC_ARN="${TopicArn}" setsid nohup python3.11 deploy_orchestrator.py --config blueprint.yaml --vpc-create ${VpcCreateFlag} > /opt/evs/orchestrator.log 2>&1 < /dev/null &
+            STOP_AFTER_ARG=""
+            NOTIFICATION_TOPIC_ARN="${TopicArn}" setsid nohup python3.11 deploy_orchestrator.py --config blueprint.yaml --vpc-create ${VpcCreateFlag} $STOP_AFTER_ARG > /opt/evs/orchestrator.log 2>&1 < /dev/null &
 
             # 10. Completion watcher -> instance tag + SNS, keying only on the success
             #    sentinel or the process being gone. Deliberately NOT on "FAIL ["/
@@ -854,11 +846,11 @@ Resources:
             #    own command line, so the name would match "pkill -f ...py" and die with it.
             setsid nohup bash -c '
               while true; do
-                grep -q "ALL STAGES COMPLETE" /opt/evs/orchestrator.log 2>/dev/null && break
+                grep -qE "ALL STAGES COMPLETE|STOP-AFTER COMPLETE" /opt/evs/orchestrator.log 2>/dev/null && break
                 pgrep -f "[d]eploy_orchestrator.py" >/dev/null || { sleep 120; pgrep -f "[d]eploy_orchestrator.py" >/dev/null || break; }
                 sleep 60
               done
-              if grep -q "ALL STAGES COMPLETE" /opt/evs/orchestrator.log 2>/dev/null; then S=SUCCEEDED; else S=FAILED; fi
+              if grep -qE "ALL STAGES COMPLETE|STOP-AFTER COMPLETE" /opt/evs/orchestrator.log 2>/dev/null; then S=SUCCEEDED; else S=FAILED; fi
               aws ec2 create-tags --region ${AWS::Region} --resources '"$INSTANCE_ID"' --tags Key=evs-deployment,Value=$S || true
               if [ "$S" = "FAILED" ]; then
                 STAGE=$(grep -oE "FAIL  \[[a-z0-9_]+\]" /opt/evs/orchestrator.log 2>/dev/null | tail -1)
