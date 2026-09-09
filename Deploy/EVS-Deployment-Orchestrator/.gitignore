@@ -36,3 +36,9 @@ __pycache__/
 .evs_orchestrator_deps_installed
 orchestrator.log
 deployment-tracker.md
+
+# test artifacts
+.coverage
+.pytest_cache/
+.ruff_cache/
+.ash/

@@ -142,22 +142,42 @@ def discover_from_stack(session, stack_name: str, evs_endpoint_url: str | None =
     outputs = {o["OutputKey"]: o["OutputValue"] for o in stack.get("Outputs", [])}
     info["vpc_id"] = outputs.get("VpcId")
 
+    # Fall back to the stack's Vpc resource when the VpcId output is absent. A
+    # stack that failed early (before CloudFormation populated outputs) still
+    # needs to be torn down; without this fallback destroy.py hard-exits and the
+    # stack leaks. Only give up if there is genuinely no VPC to find.
     if not info["vpc_id"]:
-        logger.error("Stack %s has no VpcId output. Are you sure this is the bootstrap stack?", stack_name)
+        try:
+            resources = _list_all_stack_resources(cfn, stack_name)
+            for r in resources:
+                if r.get("LogicalResourceId") == "Vpc" and r.get("ResourceType") == "AWS::EC2::VPC":
+                    info["vpc_id"] = r.get("PhysicalResourceId")
+                    info["stack_created_vpc"] = True
+                    logger.warning(
+                        "  Stack %s has no VpcId output (likely an early-failed deploy); "
+                        "recovered VPC %s from stack resources.", stack_name, info["vpc_id"])
+                    break
+        except ClientError as e:
+            logger.warning("  Could not list resources for stack %s: %s", stack_name, e)
+
+    if not info["vpc_id"]:
+        logger.error("Stack %s has no VpcId output or Vpc resource. Are you sure this is the bootstrap stack?", stack_name)
         logger.error("The bootstrap stack name is what you passed to CloudFormation (e.g. 'evs-bootstrap-myenv').")
         sys.exit(1)
 
     logger.info("  VPC: %s", info["vpc_id"])
 
-    # Check if the stack created the VPC (has a Vpc resource)
-    try:
-        resources = _list_all_stack_resources(cfn, stack_name)
-        for r in resources:
-            if r.get("LogicalResourceId") == "Vpc" and r.get("ResourceType") == "AWS::EC2::VPC":
-                info["stack_created_vpc"] = True
-                break
-    except ClientError as e:
-        logger.warning("  Could not list resources for stack %s: %s", stack_name, e)
+    # Check if the stack created the VPC (has a Vpc resource). Skip if the
+    # fallback above already determined this.
+    if not info["stack_created_vpc"]:
+        try:
+            resources = _list_all_stack_resources(cfn, stack_name)
+            for r in resources:
+                if r.get("LogicalResourceId") == "Vpc" and r.get("ResourceType") == "AWS::EC2::VPC":
+                    info["stack_created_vpc"] = True
+                    break
+        except ClientError as e:
+            logger.warning("  Could not list resources for stack %s: %s", stack_name, e)
 
     # Discover environment ID from EVS API — match by VPC only
     evs_client = (
