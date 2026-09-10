@@ -1,7 +1,0 @@
-# Development / CI test tooling for the EVS Deployment Orchestrator.
-# Runtime deps live per-component (orchestrator/*/requirements.txt).
-pytest==9.1.1
-pytest-cov==7.1.0
-pyflakes==3.4.0
-cfn-lint==1.53.0
-PyYAML==6.0.3
