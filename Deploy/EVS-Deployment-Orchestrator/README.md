@@ -56,6 +56,11 @@ Before you start, make sure you have:
 The setup steps below walk you through uploading these, creating
 the secret, customizing the blueprint, and launching.
 
+> **Shell examples:** CLI commands below are given for both shells. **Bash
+> (Linux/macOS)** blocks target a POSIX shell; **PowerShell 7 (Windows)** blocks
+> are tested on PowerShell 7+ (`pwsh`) and may not work on Windows PowerShell
+> 5.1. Console (GUI) steps are OS-neutral and shown once.
+
 ## What to expect
 
 1. **You create one secret** (your Broadcom depot token), **upload 3 files to
@@ -89,7 +94,8 @@ the secret, customizing the blueprint, and launching.
 ### 0. Get the code
 The commands below (`check-quotas.py`, `destroy.py`) are run from your own
 machine and expect to find those scripts in the current directory. Clone the
-repo and `cd` into this tool's folder once, up front:
+repo and `cd` into this tool's folder once, up front (identical in Bash and
+PowerShell 7):
 ```bash
 git clone https://github.com/aws/solutions-for-amazon-evs.git
 cd solutions-for-amazon-evs/Deploy/EVS-Deployment-Orchestrator
@@ -98,6 +104,8 @@ Run every command below from this directory (`Deploy/EVS-Deployment-Orchestrator
 
 ### 1. Create the depot token secret
 One-time setup. Set your variables and run:
+
+**Bash (Linux/macOS):**
 ```bash
 SECRET_NAME=evs-depot-token   # can be whatever you want — must match DepotSecretName at launch
 DEPOT_TOKEN=YOUR-TOKEN
@@ -106,6 +114,18 @@ REGION=us-east-2
 aws secretsmanager create-secret \
   --name $SECRET_NAME \
   --secret-string "$DEPOT_TOKEN" \
+  --region $REGION
+```
+
+**PowerShell 7 (Windows):**
+```powershell
+$SECRET_NAME = "evs-depot-token"   # can be whatever you want — must match DepotSecretName at launch
+$DEPOT_TOKEN = "YOUR-TOKEN"
+$REGION = "us-east-2"
+
+aws secretsmanager create-secret `
+  --name $SECRET_NAME `
+  --secret-string "$DEPOT_TOKEN" `
   --region $REGION
 ```
 > The secret can have any name — just make sure the `DepotSecretName` stack
@@ -125,8 +145,15 @@ Blueprint options:
 - `blueprints/custom.all-options.example.yaml` — every option, commented out, for a fully custom config
 
 Copy your pick to `blueprint.yaml` in the current directory, e.g.:
+
+**Bash (Linux/macOS):**
 ```bash
 cp blueprints/i4i.metal.vcf91.vsan.example.yaml blueprint.yaml
+```
+
+**PowerShell 7 (Windows):**
+```powershell
+Copy-Item blueprints/i4i.metal.vcf91.vsan.example.yaml blueprint.yaml
 ```
 Then open `blueprint.yaml` and change the two `CHANGE ME` fields.
 
@@ -146,6 +173,7 @@ group/NAT gateway limits, EVS environment and host-count limits, Route 53
 hosted zones and Resolver endpoints, and Secrets Manager. Set your variables
 and run:
 
+**Bash (Linux/macOS):**
 ```bash
 BLUEPRINT=blueprint.yaml
 REGION=us-east-2
@@ -153,6 +181,16 @@ AZ=us-east-2a
 
 pip3 install boto3   # skip if you already have it (preinstalled in AWS CloudShell)
 python3 check-quotas.py --blueprint $BLUEPRINT --region $REGION --availability-zone $AZ
+```
+
+**PowerShell 7 (Windows):**
+```powershell
+$BLUEPRINT = "blueprint.yaml"
+$REGION = "us-east-2"
+$AZ = "us-east-2a"
+
+python -m pip install boto3   # skip if you already have it
+python check-quotas.py --blueprint $BLUEPRINT --region $REGION --availability-zone $AZ
 ```
 
 It compares what your blueprint needs against your service quotas **and**
@@ -170,14 +208,30 @@ is the `blueprint.yaml` you created in step 2, in your current directory.
 
 Set the bucket and region first — run this whether or not you need to create a
 bucket, since the upload commands below use both:
+
+**Bash (Linux/macOS):**
 ```bash
 BUCKET=my-evs-deployment-bucket   # an existing bucket, or a new globally-unique name
 REGION=us-east-2
 ```
+
+**PowerShell 7 (Windows):**
+```powershell
+$BUCKET = "my-evs-deployment-bucket"   # an existing bucket, or a new globally-unique name
+$REGION = "us-east-2"
+```
 If you don't already have a bucket, create it now (bucket names must be
 globally unique, so pick something distinctive):
+
+**Bash (Linux/macOS):**
 ```bash
 aws s3api create-bucket --bucket $BUCKET --region $REGION \
+  --create-bucket-configuration LocationConstraint=$REGION
+```
+
+**PowerShell 7 (Windows):**
+```powershell
+aws s3api create-bucket --bucket $BUCKET --region $REGION `
   --create-bucket-configuration LocationConstraint=$REGION
 ```
 In `us-east-1`, omit the `--create-bucket-configuration` argument — that region
@@ -185,6 +239,8 @@ rejects an explicit `LocationConstraint`.
 
 Then upload the three files. Use the OVA version matching the blueprint you
 copied in step 2 (a 9.1.0 blueprint needs a 9.1.0 OVA):
+
+**Bash (Linux/macOS):**
 ```bash
 BLUEPRINT=blueprint.yaml
 OVA=VCF-SDDC-Manager-Appliance-9.1.0.0.xxxxx.ova
@@ -192,6 +248,17 @@ OVF=VMware-ovftool-4.6.3-xxxxx-lin.x86_64.zip
 
 aws s3 cp $BLUEPRINT s3://$BUCKET/blueprint.yaml --region $REGION \
   && aws s3 cp $OVA s3://$BUCKET/ --region $REGION \
+  && aws s3 cp $OVF s3://$BUCKET/ --region $REGION
+```
+
+**PowerShell 7 (Windows):**
+```powershell
+$BLUEPRINT = "blueprint.yaml"
+$OVA = "VCF-SDDC-Manager-Appliance-9.1.0.0.xxxxx.ova"
+$OVF = "VMware-ovftool-4.6.3-xxxxx-lin.x86_64.zip"
+
+aws s3 cp $BLUEPRINT s3://$BUCKET/blueprint.yaml --region $REGION `
+  && aws s3 cp $OVA s3://$BUCKET/ --region $REGION `
   && aws s3 cp $OVF s3://$BUCKET/ --region $REGION
 ```
 Console: S3 → Create bucket (skip if you already have one) → open it → Upload (repeat for all three files).
@@ -217,6 +284,8 @@ Create a stack from `evs-deployment-orchestrator.yaml` in the CloudFormation con
 | `ExistingVpcId` + 4 subnet/route-table params | (none) | BYO-VPC — see section below |
 
 **CLI example:**
+
+**Bash (Linux/macOS):**
 ```bash
 STACK_NAME=my-evs-deployment
 REGION=us-east-2
@@ -239,14 +308,46 @@ aws cloudformation create-stack \
     ParameterKey=DepotSecretName,ParameterValue=$SECRET_NAME
 ```
 
+**PowerShell 7 (Windows):**
+```powershell
+$STACK_NAME = "my-evs-deployment"
+$REGION = "us-east-2"
+$BUCKET = "my-evs-deployment-bucket"
+$OVA = "VCF-SDDC-Manager-Appliance-9.1.0.0.xxxxx.ova"
+$OVF = "VMware-ovftool-4.6.3-xxxxx-lin.x86_64.zip"
+$AZ = "us-east-2a"
+$SECRET_NAME = "evs-depot-token"   # the depot-token secret you created above
+
+aws cloudformation create-stack `
+  --stack-name $STACK_NAME `
+  --region $REGION `
+  --template-body file://evs-deployment-orchestrator.yaml `
+  --capabilities CAPABILITY_IAM `
+  --parameters `
+    ParameterKey=BlueprintKey,ParameterValue=s3://$BUCKET/blueprint.yaml `
+    ParameterKey=OvaKey,ParameterValue=s3://$BUCKET/$OVA `
+    ParameterKey=OvfKey,ParameterValue=s3://$BUCKET/$OVF `
+    ParameterKey=AvailabilityZone,ParameterValue=$AZ `
+    ParameterKey=DepotSecretName,ParameterValue=$SECRET_NAME
+```
+
 **Optional parameters** are added as extra `ParameterKey=...,ParameterValue=...`
 entries on the same `--parameters` list. Two you may want:
 
+**Bash (Linux/macOS):**
 ```bash
     # Get email/SMS progress notifications (see "Notifications" below):
     ParameterKey=SnsTopicArn,ParameterValue=arn:aws:sns:$REGION:<account-id>:my-topic \
     # Bring your own EC2 key pair instead of letting the stack create one:
     ParameterKey=KeyPairName,ParameterValue=my-existing-key \
+```
+
+**PowerShell 7 (Windows):**
+```powershell
+    # Get email/SMS progress notifications (see "Notifications" below):
+    ParameterKey=SnsTopicArn,ParameterValue=arn:aws:sns:${REGION}:<account-id>:my-topic `
+    # Bring your own EC2 key pair instead of letting the stack create one:
+    ParameterKey=KeyPairName,ParameterValue=my-existing-key `
 ```
 
 > **Bringing your own key pair?** `KeyPairName` must be an EC2 key pair that
@@ -300,9 +401,18 @@ Only needed if you want to intervene — for example, to resume a failed stage.
 The runner is the small EC2 instance the stack created to do the work. You can
 SSH in (requires a one-time security group update):
 
+**Bash (Linux/macOS):**
 ```bash
 KEY_FILE=<key-file>
 RUNNER_PUBLIC_IP=<runner-public-ip>
+
+ssh -i $KEY_FILE ec2-user@$RUNNER_PUBLIC_IP
+```
+
+**PowerShell 7 (Windows):**
+```powershell
+$KEY_FILE = "<key-file>"
+$RUNNER_PUBLIC_IP = "<runner-public-ip>"
 
 ssh -i $KEY_FILE ec2-user@$RUNNER_PUBLIC_IP
 ```
@@ -344,6 +454,7 @@ network path from your workstation — the easiest option is the optional
 `evs-<environment-id>_<role>` (e.g., `evs-env-abc123_vcenterSso` for the
 vCenter SSO administrator password). Retrieve them via CLI:
 
+**Bash (Linux/macOS):**
 ```bash
 REGION=us-east-2
 ENVIRONMENT_ID=env-abc123
@@ -356,6 +467,22 @@ aws secretsmanager list-secrets --region $REGION \
 # Get a specific password (e.g. vCenter SSO admin)
 aws secretsmanager get-secret-value --region $REGION \
   --secret-id evs-${ENVIRONMENT_ID}_vcenterSso \
+  --query 'SecretString' --output text
+```
+
+**PowerShell 7 (Windows):**
+```powershell
+$REGION = "us-east-2"
+$ENVIRONMENT_ID = "env-abc123"
+
+# List all secrets for your environment
+aws secretsmanager list-secrets --region $REGION `
+  --filters Key=name,Values=evs-$ENVIRONMENT_ID `
+  --query 'SecretList[].Name' --output table
+
+# Get a specific password (e.g. vCenter SSO admin)
+aws secretsmanager get-secret-value --region $REGION `
+  --secret-id "evs-${ENVIRONMENT_ID}_vcenterSso" `
   --query 'SecretString' --output text
 ```
 
@@ -383,6 +510,7 @@ Administrator password:
 | You set `KeyPairName` | your key | **your own `.pem`** — AWS has no copy, so it is *not* in SSM |
 | You omitted `KeyPairName` | `<stack-name>-runner-key` (auto-created) | the private key from SSM Parameter Store (commands below) |
 
+**Bash (Linux/macOS):**
 ```bash
 REGION=<region>
 STACK=<your-stack-name>
@@ -417,6 +545,43 @@ aws ssm get-parameter --region $REGION --name /ec2/keypair/$KEY_ID \
   --with-decryption --query Parameter.Value --output text > jumpbox-key.pem
 chmod 400 jumpbox-key.pem
 aws ec2 get-password-data --region $REGION --instance-id $JUMPBOX_ID \
+  --priv-launch-key jumpbox-key.pem --query PasswordData --output text
+```
+
+**PowerShell 7 (Windows):**
+```powershell
+$REGION = "<region>"
+$STACK = "<your-stack-name>"
+
+# 1. Find the jumpbox (it's in the infrastructure stack's outputs)
+$INFRA = aws cloudformation list-stacks --region $REGION `
+  --query "StackSummaries[?starts_with(StackName,'$STACK-amazon-evs-') && StackStatus=='CREATE_COMPLETE'].StackName" `
+  --output text | Select-Object -First 1
+$JUMPBOX_IP = aws cloudformation describe-stacks --region $REGION --stack-name $INFRA `
+  --query 'Stacks[0].Outputs[?OutputKey==`JumpboxPublicIp`].OutputValue' --output text
+$JUMPBOX_SG = aws cloudformation describe-stacks --region $REGION --stack-name $INFRA `
+  --query 'Stacks[0].Outputs[?OutputKey==`JumpboxSecurityGroupId`].OutputValue' --output text
+$JUMPBOX_ID = aws cloudformation describe-stacks --region $REGION --stack-name $INFRA `
+  --query 'Stacks[0].Outputs[?OutputKey==`JumpboxInstanceId`].OutputValue' --output text
+
+# 2. Allow RDP from your current IP only
+$MY_IP = Invoke-RestMethod https://checkip.amazonaws.com
+aws ec2 authorize-security-group-ingress --region $REGION `
+  --group-id $JUMPBOX_SG --protocol tcp --port 3389 --cidr "$($MY_IP.Trim())/32"
+
+# 3. Get the Windows Administrator password
+# The jumpbox uses the SAME key pair as the runner.
+# If you set KeyPairName at launch,
+# use YOUR OWN .pem file for that key pair - AWS never has its private key,
+# so it isn't retrievable from SSM.
+#   aws ec2 get-password-data --region $REGION --instance-id $JUMPBOX_ID `
+#     --priv-launch-key /path/to/your-key.pem --query PasswordData --output text
+# Otherwise (no KeyPairName set, auto-created key), retrieve it from SSM:
+$KEY_ID = aws ec2 describe-key-pairs --region $REGION `
+  --key-names "$STACK-runner-key" --query 'KeyPairs[0].KeyPairId' --output text
+aws ssm get-parameter --region $REGION --name /ec2/keypair/$KEY_ID `
+  --with-decryption --query Parameter.Value --output text | Set-Content -Encoding ascii jumpbox-key.pem
+aws ec2 get-password-data --region $REGION --instance-id $JUMPBOX_ID `
   --priv-launch-key jumpbox-key.pem --query PasswordData --output text
 ```
 
@@ -455,6 +620,8 @@ Use an existing VPC instead of letting the stack create one. Start from
 whichever step matches what you already have — skip anything already done.
 
 ### Step 1: VPC (skip if you already have one)
+
+**Bash (Linux/macOS):**
 ```bash
 REGION=us-east-2
 VPC_ID=$(aws ec2 create-vpc --cidr-block 10.30.0.0/16 --region $REGION \
@@ -462,13 +629,31 @@ VPC_ID=$(aws ec2 create-vpc --cidr-block 10.30.0.0/16 --region $REGION \
 aws ec2 modify-vpc-attribute --vpc-id $VPC_ID --enable-dns-support --region $REGION
 aws ec2 modify-vpc-attribute --vpc-id $VPC_ID --enable-dns-hostnames --region $REGION
 ```
+
+**PowerShell 7 (Windows):**
+```powershell
+$REGION = "us-east-2"
+$VPC_ID = aws ec2 create-vpc --cidr-block 10.30.0.0/16 --region $REGION `
+  --query 'Vpc.VpcId' --output text
+aws ec2 modify-vpc-attribute --vpc-id $VPC_ID --enable-dns-support --region $REGION
+aws ec2 modify-vpc-attribute --vpc-id $VPC_ID --enable-dns-hostnames --region $REGION
+```
 Console: VPC → Your VPCs → Create VPC → VPC only → CIDR `10.30.0.0/16`.
 Enable DNS resolution and DNS hostnames under Actions → Edit VPC settings.
 
 ### Step 2: Internet gateway (skip if your VPC already has one)
+
+**Bash (Linux/macOS):**
 ```bash
 IGW_ID=$(aws ec2 create-internet-gateway --region $REGION \
   --query 'InternetGateway.InternetGatewayId' --output text)
+aws ec2 attach-internet-gateway --vpc-id $VPC_ID --internet-gateway-id $IGW_ID --region $REGION
+```
+
+**PowerShell 7 (Windows):**
+```powershell
+$IGW_ID = aws ec2 create-internet-gateway --region $REGION `
+  --query 'InternetGateway.InternetGatewayId' --output text
 aws ec2 attach-internet-gateway --vpc-id $VPC_ID --internet-gateway-id $IGW_ID --region $REGION
 ```
 Console: VPC → Internet gateways → Create → then Actions → Attach to VPC.
@@ -477,6 +662,7 @@ Console: VPC → Internet gateways → Create → then Actions → Attach to VPC
 
 You need 3 subnets, all in the **same AZ**:
 
+**Bash (Linux/macOS):**
 ```bash
 AZ=us-east-2a
 
@@ -496,11 +682,33 @@ RUNNER_SUBNET=$(aws ec2 create-subnet --vpc-id $VPC_ID --cidr-block 10.30.6.0/24
 aws ec2 modify-subnet-attribute --subnet-id $PUBLIC_SUBNET --map-public-ip-on-launch --region $REGION
 aws ec2 modify-subnet-attribute --subnet-id $RUNNER_SUBNET --map-public-ip-on-launch --region $REGION
 ```
+
+**PowerShell 7 (Windows):**
+```powershell
+$AZ = "us-east-2a"
+
+# Public subnet (for the NAT gateway)
+$PUBLIC_SUBNET = aws ec2 create-subnet --vpc-id $VPC_ID --cidr-block 10.30.5.0/24 `
+  --availability-zone $AZ --region $REGION --query 'Subnet.SubnetId' --output text
+
+# Service-access subnet (EVS uses this for its control-plane connection)
+$SERVICE_SUBNET = aws ec2 create-subnet --vpc-id $VPC_ID --cidr-block 10.30.0.0/24 `
+  --availability-zone $AZ --region $REGION --query 'Subnet.SubnetId' --output text
+
+# Runner subnet (where the bootstrap runner instance launches)
+$RUNNER_SUBNET = aws ec2 create-subnet --vpc-id $VPC_ID --cidr-block 10.30.6.0/24 `
+  --availability-zone $AZ --region $REGION --query 'Subnet.SubnetId' --output text
+
+# Enable public IPs on runner + public subnets
+aws ec2 modify-subnet-attribute --subnet-id $PUBLIC_SUBNET --map-public-ip-on-launch --region $REGION
+aws ec2 modify-subnet-attribute --subnet-id $RUNNER_SUBNET --map-public-ip-on-launch --region $REGION
+```
 Console: VPC → Subnets → Create subnet (repeat 3x). Then select each of the
 runner/public subnets → Actions → Edit subnet settings → enable auto-assign public IP.
 
 ### Step 4: Route tables
 
+**Bash (Linux/macOS):**
 ```bash
 # Public route table — gives runner + public subnets a path to the internet
 PUBLIC_RT=$(aws ec2 create-route-table --vpc-id $VPC_ID --region $REGION \
@@ -515,18 +723,44 @@ SERVICE_RT=$(aws ec2 create-route-table --vpc-id $VPC_ID --region $REGION \
   --query 'RouteTable.RouteTableId' --output text)
 aws ec2 associate-route-table --route-table-id $SERVICE_RT --subnet-id $SERVICE_SUBNET --region $REGION
 ```
+
+**PowerShell 7 (Windows):**
+```powershell
+# Public route table — gives runner + public subnets a path to the internet
+$PUBLIC_RT = aws ec2 create-route-table --vpc-id $VPC_ID --region $REGION `
+  --query 'RouteTable.RouteTableId' --output text
+aws ec2 create-route --route-table-id $PUBLIC_RT --destination-cidr-block 0.0.0.0/0 `
+  --gateway-id $IGW_ID --region $REGION
+aws ec2 associate-route-table --route-table-id $PUBLIC_RT --subnet-id $PUBLIC_SUBNET --region $REGION
+aws ec2 associate-route-table --route-table-id $PUBLIC_RT --subnet-id $RUNNER_SUBNET --region $REGION
+
+# Service-access route table — leave empty, the orchestrator adds the NAT route later
+$SERVICE_RT = aws ec2 create-route-table --vpc-id $VPC_ID --region $REGION `
+  --query 'RouteTable.RouteTableId' --output text
+aws ec2 associate-route-table --route-table-id $SERVICE_RT --subnet-id $SERVICE_SUBNET --region $REGION
+```
 Console: VPC → Route tables → Create (2x). For the public one: Routes tab →
 Edit → add `0.0.0.0/0` → target: your IGW. For both: Subnet associations →
 Edit → check the appropriate subnets.
 
 ### Step 5: Use these values at stack launch
 
+**Bash (Linux/macOS):**
 ```bash
 echo "ExistingVpcId:                     $VPC_ID"
 echo "ExistingRunnerSubnetId:            $RUNNER_SUBNET"
 echo "ExistingServiceAccessSubnetId:     $SERVICE_SUBNET"
 echo "ExistingServiceAccessRouteTableId: $SERVICE_RT"
 echo "ExistingPublicSubnetId:            $PUBLIC_SUBNET"
+```
+
+**PowerShell 7 (Windows):**
+```powershell
+Write-Host "ExistingVpcId:                     $VPC_ID"
+Write-Host "ExistingRunnerSubnetId:            $RUNNER_SUBNET"
+Write-Host "ExistingServiceAccessSubnetId:     $SERVICE_SUBNET"
+Write-Host "ExistingServiceAccessRouteTableId: $SERVICE_RT"
+Write-Host "ExistingPublicSubnetId:            $PUBLIC_SUBNET"
 ```
 
 Set `CidrPrefix` to match your VPC's range (e.g. `10.30.` for `10.30.0.0/16`).
@@ -548,6 +782,8 @@ runner (named `<stack-name>-runner-key`) with its private key stored in SSM
 Parameter Store. To SSH in:
 
 1. **Get the key pair ID and retrieve the private key:**
+
+   **Bash (Linux/macOS):**
    ```bash
    STACK_NAME=<stack-name>
    REGION=<region>
@@ -568,7 +804,28 @@ Parameter Store. To SSH in:
    chmod 400 runner-key.pem
    ```
 
+   **PowerShell 7 (Windows):**
+   ```powershell
+   $STACK_NAME = "<stack-name>"
+   $REGION = "<region>"
+
+   # Find the key pair ID
+   $KEY_ID = aws ec2 describe-key-pairs `
+     --key-names "$STACK_NAME-runner-key" `
+     --region $REGION `
+     --query 'KeyPairs[0].KeyPairId' --output text
+
+   # Download the private key
+   aws ssm get-parameter `
+     --name /ec2/keypair/$KEY_ID `
+     --with-decryption `
+     --region $REGION `
+     --query 'Parameter.Value' --output text | Set-Content -Encoding ascii runner-key.pem
+   ```
+
 2. **Add an inbound SSH rule to the runner's security group** (scoped to your IP):
+
+   **Bash (Linux/macOS):**
    ```bash
    RUNNER_INSTANCE_ID=<runner-instance-id>
    REGION=<region>
@@ -589,18 +846,59 @@ Parameter Store. To SSH in:
      --region $REGION
    ```
 
+   **PowerShell 7 (Windows):**
+   ```powershell
+   $RUNNER_INSTANCE_ID = "<runner-instance-id>"
+   $REGION = "<region>"
+
+   # Find the runner's security group
+   $SG_ID = aws ec2 describe-instances `
+     --instance-ids $RUNNER_INSTANCE_ID `
+     --region $REGION `
+     --query 'Reservations[0].Instances[0].SecurityGroups[0].GroupId' --output text
+
+   # Allow SSH from your current IP
+   $MY_IP = Invoke-RestMethod https://checkip.amazonaws.com
+   aws ec2 authorize-security-group-ingress `
+     --group-id $SG_ID `
+     --protocol tcp `
+     --port 22 `
+     --cidr "$($MY_IP.Trim())/32" `
+     --region $REGION
+   ```
+
 3. **Connect:**
+
+   **Bash (Linux/macOS):**
    ```bash
    RUNNER_PUBLIC_IP=<runner-public-ip>
 
    ssh -i runner-key.pem ec2-user@$RUNNER_PUBLIC_IP
    ```
+
+   **PowerShell 7 (Windows):**
+   ```powershell
+   $RUNNER_PUBLIC_IP = "<runner-public-ip>"
+
+   ssh -i runner-key.pem ec2-user@$RUNNER_PUBLIC_IP
+   ```
    The runner's public IP is visible in the EC2 console or via:
+
+   **Bash (Linux/macOS):**
    ```bash
    RUNNER_INSTANCE_ID=<runner-instance-id>
    REGION=<region>
 
    aws ec2 describe-instances --instance-ids $RUNNER_INSTANCE_ID \
+     --region $REGION --query 'Reservations[0].Instances[0].PublicIpAddress' --output text
+   ```
+
+   **PowerShell 7 (Windows):**
+   ```powershell
+   $RUNNER_INSTANCE_ID = "<runner-instance-id>"
+   $REGION = "<region>"
+
+   aws ec2 describe-instances --instance-ids $RUNNER_INSTANCE_ID `
      --region $REGION --query 'Reservations[0].Instances[0].PublicIpAddress' --output text
    ```
 
@@ -614,6 +912,8 @@ Parameter Store. To SSH in:
 > it for you.
 
 Tear everything down with the standalone `destroy.py` script (from any machine with `boto3` + AWS credentials):
+
+**Bash (Linux/macOS):**
 ```bash
 STACK_NAME=<stack-name>
 REGION=<region>
@@ -628,6 +928,23 @@ python3 destroy.py --bootstrap-stack $STACK_NAME --region $REGION --include-infr
 # In BYO-VPC mode, only resources created by this stack inside the VPC
 # will be removed — nothing pre-existing is touched.
 python3 destroy.py --bootstrap-stack $STACK_NAME --region $REGION --all
+```
+
+**PowerShell 7 (Windows):**
+```powershell
+$STACK_NAME = "<stack-name>"
+$REGION = "<region>"
+
+# Environment only (safest — leaves infra for reuse/redeployment)
+python destroy.py --bootstrap-stack $STACK_NAME --region $REGION
+
+# Also remove landing zone (NAT, Route Server, SG, key pair)
+python destroy.py --bootstrap-stack $STACK_NAME --region $REGION --include-infra
+
+# Full nuke — removes everything including VPC and runner
+# In BYO-VPC mode, only resources created by this stack inside the VPC
+# will be removed — nothing pre-existing is touched.
+python destroy.py --bootstrap-stack $STACK_NAME --region $REGION --all
 ```
 Only requires `boto3` and AWS credentials. Auto-discovers the environment ID,
 VPC, and landing-zone stack from the bootstrap stack. Shows a confirmation
