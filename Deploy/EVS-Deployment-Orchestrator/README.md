@@ -138,22 +138,18 @@ change the two `CHANGE ME` fields. Every field is documented inline.
 
 Blueprint options:
 
-- `blueprints/i4i.metal.vcf90.vsan.example.yaml` — i4i.metal, VCF 9.0.2, vSAN
-- `blueprints/i4i.metal.vcf91.vsan.example.yaml` — i4i.metal, VCF 9.1.0, vSAN
-- `blueprints/i7i.metal-24xl.vcf90.vsan.example.yaml` — i7i.metal-24xl, VCF 9.0.2, vSAN
-- `blueprints/i7i.metal-24xl.vcf91.vsan.example.yaml` — i7i.metal-24xl, VCF 9.1.0, vSAN
-- `blueprints/custom.all-options.example.yaml` — every option, commented out, for a fully custom config
+- `blueprints/custom.all-options.example.yaml` — every option, documented inline, for a fully custom config (set your instance type and VCF version here)
 
-Copy your pick to `blueprint.yaml` in the current directory, e.g.:
+Copy it to `blueprint.yaml` in the current directory:
 
 **Bash (Linux/macOS):**
 ```bash
-cp blueprints/i4i.metal.vcf91.vsan.example.yaml blueprint.yaml
+cp blueprints/custom.all-options.example.yaml blueprint.yaml
 ```
 
 **PowerShell 7 (Windows):**
 ```powershell
-Copy-Item blueprints/i4i.metal.vcf91.vsan.example.yaml blueprint.yaml
+Copy-Item blueprints/custom.all-options.example.yaml blueprint.yaml
 ```
 Then open `blueprint.yaml` and change the two `CHANGE ME` fields.
 
@@ -599,11 +595,7 @@ routing inside the VPC are already wired up.
 ```
 ├── README.md                  ← you are here
 ├── evs-deployment-orchestrator.yaml         ← the CloudFormation template (launch this)
-├── blueprints/                ← ready-to-go blueprints (pick one, customize it)
-│   ├── i4i.metal.vcf90.vsan.example.yaml
-│   ├── i4i.metal.vcf91.vsan.example.yaml
-│   ├── i7i.metal-24xl.vcf90.vsan.example.yaml
-│   ├── i7i.metal-24xl.vcf91.vsan.example.yaml
+├── blueprints/                ← ready-to-go blueprint (customize it)
 │   └── custom.all-options.example.yaml   ← every option, commented, for custom configs
 ├── check-quotas.py            ← pre-launch quota preflight (run this)
 ├── destroy.py                 ← standalone teardown script
