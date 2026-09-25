@@ -131,16 +131,11 @@ aws secretsmanager create-secret `
 > The secret can have any name — just make sure the `DepotSecretName` stack
 > parameter matches it when you launch (default: `evs-depot-token`).
 
-### 2. Pick and customize a blueprint
-Start from a ready-to-go blueprint in the [`blueprints/`](blueprints/) folder that
-matches your instance type and VCF version, copy it to `blueprint.yaml`, and
-change the two `CHANGE ME` fields. Every field is documented inline.
-
-Blueprint options:
-
-- `blueprints/custom.all-options.example.yaml` — every option, documented inline, for a fully custom config (set your instance type and VCF version here)
-
-Copy it to `blueprint.yaml` in the current directory:
+### 2. Build your blueprint
+Start from [`blueprints/custom.all-options.example.yaml`](blueprints/custom.all-options.example.yaml),
+the full reference blueprint: every supported option is listed, commented out,
+with notes inline. Copy it to `blueprint.yaml`, then uncomment and set the
+fields you need.
 
 **Bash (Linux/macOS):**
 ```bash
@@ -151,16 +146,20 @@ cp blueprints/custom.all-options.example.yaml blueprint.yaml
 ```powershell
 Copy-Item blueprints/custom.all-options.example.yaml blueprint.yaml
 ```
-Then open `blueprint.yaml` and change the two `CHANGE ME` fields.
 
-With a ready-to-go blueprint the only fields you must change are:
+At a minimum, uncomment and set every field marked `REQUIRED`:
 
 - `dns.fqdn` — any private domain name you choose (e.g. `"vcf.mycompany.internal"`)
 - `evs.environment_name` — display name for this environment (letters, digits, hyphens, underscores only)
+- `evs.instance_type` — `i4i.metal` (128 vCPUs), `i7i.metal-24xl` (96 vCPUs), or `i7i.metal-48xl` (192 vCPUs)
+- `evs.vcf_version` — `"9.0.2"` or `"9.1.0"`
+- `evs.terms_accepted` and `evs.simple_deployment`
+- `hostnames.esxi` (the host list), plus `hostnames.vcenter`, `hostnames.nsx`, and `hostnames.sddc_manager`
+- all six `sizing.*` fields
 
-`instance_type` and `vcf_version` are already set to match the blueprint you
-picked. Need more (or fewer) hosts? Each blueprint's `hostnames.esxi` list has
-inline guidance on changing the host count.
+These have no defaults — omitting any one fails validation at launch. Everything
+not marked `REQUIRED` is optional. Need more (or fewer) hosts? The
+`hostnames.esxi` list has inline guidance on changing the host count.
 
 ### 3. Check your account has room (optional but recommended)
 Now that you have a real blueprint, verify your account has the quota headroom
@@ -595,8 +594,8 @@ routing inside the VPC are already wired up.
 ```
 ├── README.md                  ← you are here
 ├── evs-deployment-orchestrator.yaml         ← the CloudFormation template (launch this)
-├── blueprints/                ← ready-to-go blueprint (customize it)
-│   └── custom.all-options.example.yaml   ← every option, commented, for custom configs
+├── blueprints/                ← the reference blueprint (copy it, customize it)
+│   └── custom.all-options.example.yaml   ← every option, commented, with inline notes
 ├── check-quotas.py            ← pre-launch quota preflight (run this)
 ├── destroy.py                 ← standalone teardown script
 ├── orchestrator/              ← the deployment automation (runs on the runner)
