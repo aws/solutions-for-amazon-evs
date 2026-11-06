@@ -1,5 +1,8 @@
 name: Python lint
 
+# This file is published to the public repo. Keep the push trigger: publishes
+# land on public main as direct pushes, not pull requests, so without it lint
+# never runs there.
 on:
   pull_request:
     paths:

@@ -6,3 +6,9 @@
 
 # Orchestrator dependency-bootstrap marker (created on the runner).
 .evs_orchestrator_deps_installed
+
+# Local coding-agent settings (one developer's permissions and paths).
+.claude/settings.local.json
+
+# Python bytecode, written when the release scripts or their tests run.
+__pycache__/
