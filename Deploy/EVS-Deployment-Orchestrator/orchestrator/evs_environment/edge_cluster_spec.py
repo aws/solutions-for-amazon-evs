@@ -51,10 +51,7 @@ class EdgeClusterSpec:
     # otherwise forcibly reclaim the active role. This matches AWS's own EVS
     # getting-started guide ("Ensure both the Tier-0 and Tier-1 gateways have
     # Non-preemptive failover... Non-preemptive is the NSX default and avoids
-    # an unnecessary BGP session drop") and EVS's own reference NSX config
-    # (NsxGatewayConfig.java step 8A: ha_mode=ACTIVE_STANDBY,
-    # failover_mode=NON_PREEMPTIVE) used by their continuously-running
-    # self-deployed canary against real VCF 9.0.2/9.1.0 environments.
+    # an unnecessary BGP session drop").
     _T0_FAILOVER_MODE = "NON_PREEMPTIVE"
     _T1_FAILOVER_MODE = "NON_PREEMPTIVE"
     _EDGE_CLUSTER_LOCAL_ASN = 65000
@@ -67,14 +64,11 @@ class EdgeClusterSpec:
     #
     # 8500 matches: AWS's documented EVS VLAN table (jumbo frames on the
     # vMotion, vSAN and overlay/TEP networks), Broadcom's NSX overlay minimum
-    # of 1600 (1700 recommended), and EVS's own canary, which sets
-    # mtu=8500 with transport_vlan=<edge TEP> and overlay_encap=GENEVE
-    # (AWSPromenadSystemTests, branch ga,
-    # .../vcf9/steps/nsx/NsxTransportInfra.java step2CreateUplinkProfile).
+    # of 1600 (1700 recommended).
     #
     # Note this is NOT the Tier-0 external uplink interface, which is routed
-    # north-south over _UPLINK_VLAN and is correctly 1500 (the canary sets 1500
-    # there in NsxGatewayConfig.java) -- we don't set that value at all.
+    # north-south over _UPLINK_VLAN and is correctly 1500 -- we don't set that
+    # value at all.
     _MTU = 8500
 
     # VLANs — canonical VLAN IDs AWS Elastic VMware Service hardcodes on every

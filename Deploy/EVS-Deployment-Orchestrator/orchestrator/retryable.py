@@ -1,7 +1,7 @@
 """Transient-error classification — the single list the retry logic reads.
 
-Consolidates the scattered per-step retry decisions into one place (M6 of
-the CI/CD plan). Every entry below is traceable to an observed failure
+Consolidates the scattered per-step retry decisions into one place.
+Every entry below is traceable to an observed failure
 mode, with its source noted. When the pipeline (or a person) hits a
 failure, `is_transient(err)` answers: retry, or is the commit/config bad?
 
@@ -10,8 +10,8 @@ Sources:
   (vlan_route_table_associator: ThrottlingException/RequestLimitExceeded;
   ebs_volume_manager: attach 404 race; deploy_orchestrator: async-secret
   ResourceNotFound bounded retries).
-- EVS host/VLAN failure modes from the EVS operational runbook: metal
-  host ICE and Skylark VLAN "internal error, please retry".
+- EVS host/VLAN failure modes: metal host ICE (insufficient capacity)
+  and VLAN "internal error, please retry".
 - Broadcom depot / ovftool / installer-not-ready network flakes
   (deploy_orchestrator's _ensure_ovftool and installer polling).
 """
@@ -55,7 +55,7 @@ NON_TRANSIENT_ERROR_CODES = frozenset({
 # EVS reports host/VLAN failure causes as free text in stateDetails.
 # These phrases mark the retryable ones. Note: metal-host ICE ("insufficient
 # capacity") is deliberately NOT here -- it is fatal (see
-# NON_TRANSIENT_ERROR_CODES). Only the genuinely self-clearing Skylark VLAN
+# NON_TRANSIENT_ERROR_CODES). Only the genuinely self-clearing VLAN
 # "internal error, please retry" transients remain.
 TRANSIENT_STATE_DETAIL_PATTERNS = (
     re.compile(r"internal error.{0,40}(please )?retry", re.IGNORECASE),

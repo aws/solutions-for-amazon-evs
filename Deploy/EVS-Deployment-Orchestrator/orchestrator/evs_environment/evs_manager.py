@@ -133,8 +133,10 @@ class EVSManager:
     def get_latest_esx_version(self, target_version: str, instance_type: str) -> str:
         """Resolve the latest ESXi version from the EVS get-versions API.
 
-        Filters by instance_type, then picks the latest version whose
-        major.minor matches target_version.
+        Filters by instance_type, then picks the latest build whose
+        major.minor.patch matches target_version. VCF X.Y.Z needs an ESXi
+        X.Y.Z build: the VCF Installer rejects a newer ESXi patch (for
+        example ESXi 9.1.1 with VCF 9.1.0) at spec validation.
         """
         response = self._evs.get_versions()
 
@@ -150,15 +152,23 @@ class EVSManager:
                 f"via get-versions API."
             )
 
+        # target_version may be normalized to 4 parts ("9.1.0.0"); match
+        # on the first 3.
         parts = target_version.split(".")
-        prefix = f"ESXi-{parts[0]}.{parts[1]}." if len(parts) >= 2 else f"ESXi-{target_version}"
+        if len(parts) >= 3:
+            prefix = f"ESXi-{parts[0]}.{parts[1]}.{parts[2]}."
+        elif len(parts) == 2:
+            prefix = f"ESXi-{parts[0]}.{parts[1]}."
+        else:
+            prefix = f"ESXi-{target_version}"
 
         matching = [v for v in esx_versions if v.startswith(prefix)]
         if not matching:
             raise RuntimeError(
                 f"No ESXi version matching '{prefix}*' for {instance_type}. "
                 f"Available: {esx_versions}. "
-                f"Set 'esxVersion' in config.json to override."
+                f"Set 'evs.esx_version' in the blueprint (or 'esxVersion' in "
+                f"config.json) to choose a build."
             )
 
         def _version_sort_key(v: str) -> tuple[int, ...]:

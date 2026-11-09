@@ -14,6 +14,12 @@
 #
 # (The OVA + ovftool are the OvaKey/OvfKey CloudFormation parameters — not set here.)
 
+# requires:                                 # RECOMMENDED. The orchestrator releases this blueprint works
+#   edo: ">=1.0.0, <2.0.0"                  #   with, as a SemVer range. The orchestrator stops at
+#                                           #   launch, before deploying anything, when its version is outside
+#                                           #   the range. Without it the blueprint is treated as written for
+#                                           #   v1.0.0 (">=1.0.0, <2.0.0"), so it runs on every 1.x release.
+
 # dns:
 #   fqdn: "vcf.example.internal"            # REQUIRED. Any private domain you choose (a private DNS zone is auto-created).
 #                                           #   Rule: at least one dot, no trailing dot, each label letters/digits/

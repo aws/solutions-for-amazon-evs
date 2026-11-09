@@ -82,6 +82,8 @@ import boto3  # noqa: E402
 import requests as http_requests  # noqa: E402
 import yaml  # noqa: E402
 
+import blueprint_version  # noqa: E402  (orchestrator/blueprint_version.py)
+
 # === stdout buffering ===
 # Logger output is unbuffered (stderr); bare print() is block-buffered (stdout),
 # so blobs land out of order in the shared log file. Line-buffer stdout to fix
@@ -2604,8 +2606,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         choices=STAGE_IDS,
         help=(
-            "Run up to and including this stage, then stop cleanly. Used by CI "
-            "stack tests (--stop-after validate_dns) to exercise the landing "
+            "Run up to and including this stage, then stop cleanly. For "
+            "example, --stop-after validate_dns builds and checks the landing "
             "zone without creating an EVS environment or bare-metal hosts."
         ),
     )
@@ -3903,8 +3905,21 @@ def main():
         )
         sys.exit(1)
 
+    orchestrator_version = blueprint_version.read_orchestrator_version()
+    logger.info("EVS Deployment Orchestrator version: %s",
+                orchestrator_version or "unknown (no valid VERSION file)")
+
     if not args.destroy:
         try:
+            # First, before any other check: a blueprint written for another
+            # release fails here with the version it needs, not later with an
+            # unrelated validation error. Destroy skips it so a teardown always
+            # works, whichever release the blueprint was written for.
+            for warning in blueprint_version.check_blueprint(config, orchestrator_version):
+                logger.warning("Blueprint: %s", warning)
+            required, declared = blueprint_version.requirement(config)
+            logger.info("Blueprint works with EVS Deployment Orchestrator %s%s", required,
+                        "" if declared else " (no requires field, so written for v1.0.0)")
             _validate_config(config)
             # Authoritative instance-type check against live evs:GetVersions.
             # Runs unconditionally (even on --resume): it's a seconds-long

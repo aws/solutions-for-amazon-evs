@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
-  Amazon EVS Deployment Orchestrator. Creates a runner instance that preflights
+  Amazon EVS Deployment Orchestrator v1.0.0. Creates a runner instance that preflights
   your account, downloads your blueprint, and deploys a complete VCF environment
   on EVS unattended — expect about 4-7 hours end to end. Requires a blueprint,
   VCF Installer OVA, and ovftool — all referenced by S3 URI (see the blueprints/
@@ -706,16 +706,12 @@ Resources:
             # 2. Orchestrator source. Note: inside Fn::Sub, bash vars use $var
             #    (no braces) so they aren't parsed as CFN substitutions.
             mkdir -p /opt/evs && cd /opt/evs
-            # Tracks the main branch rather than an immutable SHA or tag, so a
-            # freshly-merged fix reaches new deployments without a template
-            # change. The trade-off is deliberate: main is a moving tip, so a
-            # regression merged upstream affects new stacks (and stack updates,
-            # which re-run this bootstrap) immediately. Every change to main goes
-            # through PR review on the public repo. If you need a build frozen
-            # against code you have reviewed yourself, set PINNED_COMMIT to a tag
-            # or a full commit SHA instead -- the checkout below accepts any of
-            # the three.
-            PINNED_COMMIT="main"
+            # The release tag this template shipped with, so the runner checks
+            # out the same code the template was tested with, never the moving
+            # tip of main. Each release updates it. To run other code, set
+            # PINNED_COMMIT to another tag, a full commit SHA, or "main" (at your
+            # own risk) -- the checkout below accepts any of the three.
+            PINNED_COMMIT="v1.0.0"
             retry git clone "https://github.com/aws/solutions-for-amazon-evs.git" src || fail "git clone https://github.com/aws/solutions-for-amazon-evs"
             (cd src && git checkout --quiet "$PINNED_COMMIT") || fail "checkout $PINNED_COMMIT (no such branch, tag, or commit in the upstream repo)"
             cd src/Deploy/EVS-Deployment-Orchestrator/orchestrator || fail "the orchestrator directory is missing at PINNED_COMMIT=$PINNED_COMMIT -- the clone succeeded but that ref does not contain Deploy/EVS-Deployment-Orchestrator/orchestrator. Check the PINNED_COMMIT value in this template."

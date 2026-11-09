@@ -161,6 +161,22 @@ These have no defaults — omitting any one fails validation at launch. Everythi
 not marked `REQUIRED` is optional. Need more (or fewer) hosts? The
 `hostnames.esxi` list has inline guidance on changing the host count.
 
+We recommend also uncommenting `requires`, which names the orchestrator
+releases the blueprint works with:
+
+```yaml
+requires:
+  edo: ">=1.0.0, <2.0.0"
+```
+
+At launch the orchestrator compares its own version with this range and stops,
+before deploying anything, if the blueprint was written for a different
+release. The message names the release you need. A blueprint without
+`requires` is treated as written for v1.0.0 (`">=1.0.0, <2.0.0"`), so it
+runs on every 1.x release. The orchestrator also warns about
+top-level sections it doesn't use, such as a typo or a section from a newer
+release.
+
 ### 3. Check your account has room (optional but recommended)
 Now that you have a real blueprint, verify your account has the quota headroom
 this deployment needs — bare-metal vCPUs, VPC/subnet/route table/security

@@ -7,8 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0]
+
 ### Added
 
+- Blueprint version guard: a blueprint's `requires.edo` range (for example `">=1.0.0, <2.0.0"`) is checked against the orchestrator's `VERSION` at launch, and a blueprint outside the range stops before anything is deployed. A blueprint without `requires` is treated as written for v1.0.0 (`">=1.0.0, <2.0.0"`). An unknown top-level section is a warning. The orchestrator logs its version at start
 - CloudFormation bootstrap template (`evs-deployment-orchestrator.yaml`) that deploys a fully-configured VMware Cloud Foundation 9 environment on Amazon EVS from a single stack launch
 - Bootstrap runner instance that executes the deployment orchestrator unattended, generating configuration from a user-customized blueprint (see `blueprints/`)
 - Automated creation of the EVS environment and bare-metal ESXi hosts (instance type and count configurable in the blueprint)
@@ -23,11 +26,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Support for both VCF 9.0 and VCF 9.1 target versions
 - Deployment monitoring via CloudWatch Logs and optional SNS start/failure/success notifications (`SnsTopicArn`)
 - Resume support for failed deployment stages via the orchestrator's `--resume` flag on the runner
+- ESXi build selection matches the VCF version's major.minor.patch when `evs.esx_version` isn't set, so VCF 9.1.0 gets an ESXi 9.1.0 build and not a newer patch the VCF Installer rejects. If no build matches, the deployment stops and lists the available builds
 
-### CI
-
-- Validate the post-merge full deployment end to end and exercise the
-  publish-to-public flow (opens a branch + PR on the public repo on success)
-  - Validate the post-merge full deployment end to end in us-east-2 (first run after the allowlist reached us-east-2)
-
-  - Re-validate full deployment + unattended teardown in us-east-2 (connector-delete IAM fix)
