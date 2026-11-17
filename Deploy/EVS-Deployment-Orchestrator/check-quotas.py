@@ -118,6 +118,14 @@ RESOLVER_EP_QUOTA = ("route53resolver", "L-4A669CC0", "Resolver endpoints per re
 EVS_ENV_QUOTA = ("evs", "L-27E780D9", "EVS environments per account")
 EVS_HOST_QUOTA = ("evs", "L-96A49955", "Hosts per EVS environment")
 SECRETS_QUOTA = ("secretsmanager", "L-2F66C23C", "Secrets Manager secrets per account")
+# FSx for NetApp ONTAP, checked only when storage.principal creates a file system.
+FSXN_COUNT_QUOTA = ("fsx", "L-C28C1403", "FSx for ONTAP file systems")
+FSXN_CAPACITY_QUOTA = ("fsx", "L-E2C89679", "FSx for ONTAP SSD storage (GiB)")
+FSXN_THROUGHPUT_QUOTA = ("fsx", "L-C5F860DD", "FSx for ONTAP throughput (MBps)")
+# Used only when storage.principal.fsxn omits a value, which validation rejects;
+# they keep the estimate defined. "recommended" matches orchestrator/principal_storage.py.
+FSXN_DEFAULT_CAPACITY_GB = 1024
+FSXN_RECOMMENDED_THROUGHPUT = 384
 
 GREEN, RED, YELLOW, RESET = "\033[92m", "\033[91m", "\033[93m", "\033[0m"
 
@@ -125,6 +133,36 @@ GREEN, RED, YELLOW, RESET = "\033[92m", "\033[91m", "\033[93m", "\033[0m"
 # fixed appliance-role secrets (vcenterSso, vcenterRoot, nsxAdmin, nsxRoot,
 # sddcManagerRoot, operationsAdmin, edgeAppliance) created during bringup.
 APPLIANCE_SECRETS_PER_ENV = 7
+
+
+def fsxn_requirement(bp):
+    """(capacity GiB, throughput MBps) storage.principal will create, or None.
+
+    None for vSAN (type: vsan or no storage) and for BYO-FSxN
+    (storage.principal.fsxn.volume_id), which creates nothing.
+    """
+    principal = (bp.get("storage") or {}).get("principal")
+    if not isinstance(principal, dict) or principal.get("type") != "fsxn":
+        return None
+    block = principal.get("fsxn") if isinstance(principal.get("fsxn"), dict) else {}
+    if block.get("volume_id") is not None:
+        return None
+    throughput = block.get("throughput_capacity_mbps") or "recommended"
+    if throughput == "recommended":
+        throughput = FSXN_RECOMMENDED_THROUGHPUT
+    return int(block.get("storage_capacity_gb") or FSXN_DEFAULT_CAPACITY_GB), int(throughput)
+
+
+def fsxn_usage(fsx):
+    """FSx for ONTAP file systems, SSD GiB and throughput in use in the region."""
+    count = capacity = throughput = 0
+    for page in fsx.get_paginator("describe_file_systems").paginate():
+        for fs in page.get("FileSystems", []):
+            if fs.get("FileSystemType") == "ONTAP":
+                count += 1
+                capacity += fs.get("StorageCapacity") or 0
+                throughput += (fs.get("OntapConfiguration") or {}).get("ThroughputCapacity") or 0
+    return count, capacity, throughput
 
 
 def get_quota(sq, service, code):
@@ -535,10 +573,26 @@ def main():
                        "appliance-role secrets"))
     _safe_check(SECRETS_QUOTA[2], _check_secrets)
 
+    # --- FSx for NetApp ONTAP (storage.principal create mode) -----------------
+    if yaml is None and "storage" in open(args.blueprint).read():
+        skipped_checks.append(("FSx for ONTAP quotas",
+                               "PyYAML is not installed, so storage.principal could not be read"))
+    fsxn_need = fsxn_requirement(bp)
+    if fsxn_need:
+        def _check_fsxn():
+            count, capacity, throughput = fsxn_usage(session.client("fsx"))
+            for quota_def, need, used, why in (
+                    (FSXN_COUNT_QUOTA, 1, count, "the principal datastore file system"),
+                    (FSXN_CAPACITY_QUOTA, fsxn_need[0], capacity, "storage_capacity_gb"),
+                    (FSXN_THROUGHPUT_QUOTA, fsxn_need[1], throughput, "throughput_capacity_mbps")):
+                checks.append((quota_def[2], need, used, get_quota(sq, *quota_def[:2]), why))
+        _safe_check("FSx for ONTAP quotas", _check_fsxn)
+
     # --- Report --------------------------------------------------------------
     print(f"\nQuota preflight for {args.blueprint} in {args.region}")
     print(f"  {host_count} x {instance_type}"
-          + (", jumpbox" if jumpbox else "") + (", HCX" if hcx else "") + "\n")
+          + (", jumpbox" if jumpbox else "") + (", HCX" if hcx else "")
+          + (", FSx for NetApp ONTAP principal storage" if fsxn_need else "") + "\n")
     print(f"{'Check':46} {'Need':>6} {'In use':>7} {'Limit':>7} {'Free':>6}  Result")
     print("-" * 90)
 
@@ -588,6 +642,8 @@ def main():
         NATGW_QUOTA[2]: NATGW_QUOTA, RESOLVER_EP_QUOTA[2]: RESOLVER_EP_QUOTA,
         EVS_ENV_QUOTA[2]: EVS_ENV_QUOTA, EVS_HOST_QUOTA[2]: EVS_HOST_QUOTA,
         SECRETS_QUOTA[2]: SECRETS_QUOTA,
+        FSXN_COUNT_QUOTA[2]: FSXN_COUNT_QUOTA, FSXN_CAPACITY_QUOTA[2]: FSXN_CAPACITY_QUOTA,
+        FSXN_THROUGHPUT_QUOTA[2]: FSXN_THROUGHPUT_QUOTA,
     }
     print(f"\n{RED}{len(failures)} check(s) failed.{RESET} For each, you can either free up "
           "capacity or request a quota increase:\n")

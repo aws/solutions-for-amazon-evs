@@ -79,6 +79,11 @@ class SddcSpecBuilder:
         },
     }
 
+    # Port group of the NFS network when principal storage is NFS. VCF needs an
+    # NFS-type network for NFS principal storage; it goes on the host
+    # management subnet (see _nfs_network_spec).
+    _NFS_PORT_GROUP_NAME = "pg-nfs"
+
     # Placeholder values written into the bringup spec. Phase 3's
     # ``secret_resolver`` swaps these for real password strings fetched
     # from AWS Secrets Manager just before POSTing to the installer.
@@ -104,9 +109,12 @@ class SddcSpecBuilder:
     # baseline, so the late "Enable Cluster EVC Mode" fails
     # EVCAdmissionFailedVmActive). i7i needs it: bringup can't infer a Sapphire
     # Rapids baseline, and its newer baseline masks nothing the VMs use.
+    # r7i is also 4th-gen Xeon (Sapphire Rapids) and needs the same mode.
     _EVC_MODE_BY_INSTANCE_TYPE = {
         "i7i.metal-24xl":  "INTEL_SAPPHIRERAPIDS",
         "i7i.metal-48xl":  "INTEL_SAPPHIRERAPIDS",
+        "r7i.metal-24xl":  "INTEL_SAPPHIRERAPIDS",
+        "r7i.metal-48xl":  "INTEL_SAPPHIRERAPIDS",
     }
 
     _SUPPORTED_VERSION_PREFIXES = ("9.0", "9.1")
@@ -181,9 +189,14 @@ class SddcSpecBuilder:
                 f"fully populated (initialVlans is required)."
             )
 
+        nfs_principal = self._principal_storage() is not None
         for pool_key, static in self._POOL_STATIC.items():
             if "network_type" not in static:
                 continue  # vTep handled in the NSX section, not here
+            network_type = static["network_type"]
+            port_group = static["port_group_name"]
+            if nfs_principal and network_type == "VSAN":
+                continue  # no vSAN; the NFS network is added below
             if pool_key not in vlans:
                 logger.warning("initialVlans.%s missing; skipping network", pool_key)
                 continue
@@ -207,8 +220,8 @@ class SddcSpecBuilder:
 
             out.append(
                 m.SddcNetworkSpec(
-                    network_type=static["network_type"],
-                    port_group_key=static["port_group_name"],
+                    network_type=network_type,
+                    port_group_key=port_group,
                     vlan_id=static["vlan"],
                     subnet=cidr,
                     gateway=self._first_usable(cidr),
@@ -219,7 +232,38 @@ class SddcSpecBuilder:
                     include_ip_address_ranges=include_ranges,
                 )
             )
+        if nfs_principal:
+            out.append(self._nfs_network_spec(vlans["vmkManagement"]["cidr"]))
         return out
+
+    def _nfs_network_spec(self, mgmt_cidr: str) -> m.SddcNetworkSpec:
+        """The NFS network for NFS principal storage, on the host management subnet.
+
+        The installer rejects NFS principal storage without an NFS network
+        (MISSING_NET_SPEC_ENTRY) and gives each host one address from its range.
+        The Amazon EVS User Guide puts it on the host management subnet: VLAN 0,
+        MTU 1500, and the datastore stays mounted through vmk0. The range is the
+        top of the subnet, clear of the host addresses (.11 upward).
+        """
+        static = self._POOL_STATIC["vmkManagement"]
+        net = ipaddress.ip_network(mgmt_cidr, strict=False)
+        return m.SddcNetworkSpec(
+            network_type="NFS",
+            port_group_key=self._NFS_PORT_GROUP_NAME,
+            vlan_id=static["vlan"],
+            subnet=mgmt_cidr,
+            gateway=self._first_usable(mgmt_cidr),
+            mtu=static["mtu"],
+            teaming_policy="failover_explicit",
+            active_uplinks=["uplink1"],
+            standby_uplinks=["uplink2"],
+            include_ip_address_ranges=[
+                m.IpRange(
+                    start_ip_address=str(net.broadcast_address - 55),
+                    end_ip_address=self._sixth_from_end(mgmt_cidr),
+                )
+            ],
+        )
 
     def _build_nsxt_spec(self) -> m.SddcNsxtSpec:
         vlans = self._config.get("initialVlans", {})
@@ -365,7 +409,11 @@ class SddcSpecBuilder:
         return [
             m.DvsSpec(
                 dvs_name=self._dvs_name(),
-                networks=["MANAGEMENT", "VSAN", "VMOTION", "VM_MANAGEMENT"],
+                networks=(
+                    ["MANAGEMENT", "NFS", "VMOTION", "VM_MANAGEMENT"]
+                    if self._principal_storage() else
+                    ["MANAGEMENT", "VSAN", "VMOTION", "VM_MANAGEMENT"]
+                ),
                 mtu=8500,
                 nsxt_switch_config=switch_config,
                 vmnics_to_uplinks=[
@@ -400,7 +448,32 @@ class SddcSpecBuilder:
             spec.cluster_evc_mode = evc_mode
         return spec
 
+    def _principal_storage(self) -> dict[str, Any] | None:
+        """config.principalStorage, written by phase2 once the FSx export is
+        verified live. Present => external NFS is the management datastore and
+        vSAN is not configured at all (hosts without local instance storage)."""
+        ps = self._config.get("principalStorage")
+        return ps if isinstance(ps, dict) and ps.get("nfsServer") else None
+
     def _build_datastore_spec(self) -> m.SddcDatastoreSpec:
+        principal = self._principal_storage()
+        if principal:
+            # External NFS principal storage. The export is pre-mounted on the
+            # hosts by the esxi_nfs_mount stage (Broadcom KB 414088); the
+            # installer adopts it as the cluster datastore. NFS traffic rides
+            # vmk0 (management), so no vmknic binding.
+            return m.SddcDatastoreSpec(
+                nfs_datastore_spec=m.NfsDatastoreSpec(
+                    datastore_name=principal["datastoreName"],
+                    nas_volume=m.NasVolumeSpec(
+                        server_name=[principal["nfsServer"]],
+                        path=principal["remotePath"],
+                        read_only=False,
+                        user_tag="evs-principal-nfs",
+                        enable_bind_to_vmknic=False,
+                    ),
+                ),
+            )
         return m.SddcDatastoreSpec(
             vsan_spec=m.VsanSpec(
                 datastore_name="vsan-datastore",
@@ -459,10 +532,9 @@ class SddcSpecBuilder:
           namespace and region. The underscores avoid colliding with real
           installer fields and signal "internal use".
         """
-        extras: dict[str, Any] = {
-            "deployWithoutLicenseKeys": True,
-            "skipVsanEsaCertifiedDiskValidation": True,
-        }
+        extras: dict[str, Any] = {"deployWithoutLicenseKeys": True}
+        if not self._principal_storage():
+            extras["skipVsanEsaCertifiedDiskValidation"] = True
 
         env_id = self._environment_id
         if env_id:

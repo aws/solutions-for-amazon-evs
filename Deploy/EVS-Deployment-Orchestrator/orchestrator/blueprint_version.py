@@ -38,7 +38,7 @@ DEFAULT_REQUIREMENT = ">=1.0.0, <2.0.0"
 # esxi_prework). Keys starting with "_" are set internally and are ignored.
 KNOWN_SECTIONS = frozenset({
     "requires", "dns", "evs", "hcx", "hostnames", "jumpbox", "phase3",
-    "sizing", "vpc", "aws", "aws_config", "esxi_prework",
+    "sizing", "storage", "vpc", "aws", "aws_config", "esxi_prework",
     "notification_topic_arn", "checkpoint_path", "hosts", "tags",
 })
 

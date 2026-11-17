@@ -70,6 +70,10 @@ TRANSIENT_MESSAGE_PATTERNS = (
     re.compile(r"read timed out", re.IGNORECASE),
     re.compile(r"installer not (ready|reachable)", re.IGNORECASE),
     re.compile(r"temporary failure in name resolution", re.IGNORECASE),
+    # AWS throttles that a service reports as text rather than a known code,
+    # e.g. a CloudFormation event "Route53Exception - Rate exceeded" when
+    # parallel stack tests create hosted zones at once (CI run 43514032784).
+    re.compile(r"\brate exceeded\b", re.IGNORECASE),
 )
 
 

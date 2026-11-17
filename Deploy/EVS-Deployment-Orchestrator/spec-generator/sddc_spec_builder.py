@@ -89,7 +89,7 @@ def _gather_answers():
     )
     instance_type = prompts.prompt_choice(
         "EVS host EC2 instance type (drives the cluster EVC mode)",
-        list(C.EVC_MODE_BY_INSTANCE_TYPE.keys()) + ["i4i.metal", "none"],
+        list(C.VSAN_INSTANCE_TYPES) + ["none"],
         default="i4i.metal",
     )
     answers["instance_type"] = "" if instance_type == "none" else instance_type

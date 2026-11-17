@@ -66,6 +66,9 @@ class VcenterClient:
         self._verify_tls = verify_tls
         self._port = port
         self._si: Any = None  # ServiceInstance, type depends on pyvmomi version
+        # Name of the FSx for NetApp ONTAP principal datastore when the cluster
+        # was brought up WITHOUT vSAN. None => vSAN is principal storage.
+        self.principal_datastore_name: str | None = None
 
     # ---- lifecycle ----
 
@@ -206,6 +209,17 @@ class VcenterClient:
                 didn't, edges can't deploy.
         """
         cluster = self.find_cluster(cluster_name)
+        if self.principal_datastore_name:
+            # FSx for NetApp ONTAP principal storage: the shared datastore is the
+            # NFS one bring-up adopted by name. There is no vSAN datastore.
+            for host in cluster.host:
+                for ds in host.datastore:
+                    if ds.name == self.principal_datastore_name:
+                        return ds
+            raise RuntimeError(
+                f"Principal datastore '{self.principal_datastore_name}' is not mounted on any "
+                f"host in cluster '{cluster_name}'. Check the hosts' NFS mounts before re-running."
+            )
         for host in cluster.host:
             for ds in host.datastore:
                 ds_type = getattr(ds.summary, "type", None)
@@ -274,7 +288,7 @@ class VcenterClient:
         for host in cluster.host:
             for ds in host.datastore:
                 ds_type = (getattr(ds.summary, "type", "") or "").lower()
-                if ds_type == "vsan":
+                if ds_type == "vsan" or ds.name == self.principal_datastore_name:
                     continue
                 capacity_bytes = getattr(ds.summary, "capacity", 0) or 0
                 capacity_gb = capacity_bytes / (1024 ** 3)

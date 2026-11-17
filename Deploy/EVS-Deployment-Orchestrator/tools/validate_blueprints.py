@@ -13,7 +13,9 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "spec-generator"))
+sys.path.insert(0, str(REPO_ROOT / "orchestrator"))
 from constants import EVC_MODE_BY_INSTANCE_TYPE  # noqa: E402
+import principal_storage  # noqa: E402  (standard library only)
 
 REQUIRED_SECTIONS = {"dns", "evs", "sizing", "hostnames", "jumpbox", "hcx", "phase3"}
 REQUIRED_EVS_KEYS = {"environment_name", "instance_type", "vcf_version", "terms_accepted"}
@@ -49,6 +51,11 @@ def validate_blueprint(path: Path) -> list[str]:
 
     if not data["dns"].get("fqdn"):
         problems.append("dns.fqdn missing")
+
+    # storage: the same static rules the orchestrator applies at launch. No
+    # storage section means vSAN. The BYO-VPC rule needs the bootstrap stack's
+    # --vpc-create flag, which a file alone does not carry, so it is skipped.
+    principal_storage.validate(data, problems)
 
     return problems
 

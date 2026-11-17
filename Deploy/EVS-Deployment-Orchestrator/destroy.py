@@ -14,6 +14,10 @@ Usage:
     # Full nuke: environment + landing zone + bootstrap stack
     python3 destroy.py --bootstrap-stack evs-bootstrap-myenv --region us-east-2 --all
 
+    # Also delete the FSx for NetApp ONTAP storage stack the orchestrator created
+    # (kept by default; --all needs it when that stack exists)
+    python3 destroy.py --bootstrap-stack evs-bootstrap-myenv --region us-east-2 --all --delete-storage
+
     # NOTE: --all deletes the bootstrap stack (VPC, runner, IAM) and landing zone
     # (NAT, Route Server, SG, DNS zones). In BYO-VPC mode, only resources created
     # by this stack inside the VPC will be removed — nothing pre-existing is touched.
@@ -34,8 +38,14 @@ import logging
 import sys
 import time
 
+from pathlib import Path
+
 import boto3
 from botocore.exceptions import ClientError
+
+# Shared FSx for NetApp ONTAP teardown (standard library only, no extra deps).
+sys.path.insert(0, str(Path(__file__).resolve().parent / "orchestrator"))
+import principal_storage  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -125,6 +135,9 @@ def discover_from_stack(session, stack_name: str, evs_endpoint_url: str | None =
         "environment_id": None,
         "aws_config_stack": None,
         "stack_created_vpc": False,
+        # True only when the EVS lookup below ran to the end. A failed lookup
+        # leaves environment_id empty without proving there is no environment.
+        "environment_lookup_ok": False,
     }
 
     # Read stack outputs
@@ -184,6 +197,7 @@ def discover_from_stack(session, stack_name: str, evs_endpoint_url: str | None =
         session.client("evs", endpoint_url=evs_endpoint_url)
         if evs_endpoint_url else session.client("evs")
     )
+    lookup_ok = True
     try:
         envs = []
         paginator = evs_client.get_paginator("list_environments")
@@ -198,6 +212,7 @@ def discover_from_stack(session, stack_name: str, evs_endpoint_url: str | None =
                 if _aws_error_code(e) != "ResourceNotFoundException":
                     logger.warning("  Could not get environment %s: %s",
                                    env["environmentId"], e)
+                    lookup_ok = False
                 continue
             state = env_detail.get("environmentState", "UNKNOWN")
             if state == "DELETED":
@@ -211,6 +226,8 @@ def discover_from_stack(session, stack_name: str, evs_endpoint_url: str | None =
                 break
     except ClientError as e:
         logger.warning("  Could not discover environment from EVS API: %s", e)
+        lookup_ok = False
+    info["environment_lookup_ok"] = lookup_ok
 
     if not info["environment_id"]:
         if cli_environment_id:
@@ -1135,6 +1152,24 @@ def deprovision_hcx_ipam(session, vpc_id: str | None, aws_config_stack: str | No
 # Main
 # ---------------------------------------------------------------------------
 
+def delete_storage_stack(session, storage_stack: str, storage_exists: bool,
+                         environment_confirmed_deleted: bool) -> bool:
+    """--delete-storage: delete the FSx storage stack, leaving no FSx backup.
+
+    Returns False when the stack was not deleted, so the caller keeps the
+    landing zone and bootstrap stacks. Nothing to do when the stack is gone.
+    """
+    if not storage_exists:
+        return True
+    if not environment_confirmed_deleted:
+        logger.warning("  Keeping storage stack %s: the environment deletion was not "
+                       "confirmed, so hosts may still use the datastore. Re-run once "
+                       "the environment shows DELETED.", storage_stack)
+        return False
+    return principal_storage.delete_stack(
+        session.client("cloudformation"), session.client("fsx"), storage_stack, logger)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Destroy an EVS VCF environment and associated resources",
@@ -1142,7 +1177,9 @@ def main():
         epilog="""
 Teardown levels:
   (default)       Environment only — delete hosts, secrets, connectors, env.
-                  Leaves infrastructure (VPC, runner, landing zone) for reuse.
+                  Leaves infrastructure (VPC, runner, landing zone) for reuse,
+                  and keeps the FSx for NetApp ONTAP storage stack the
+                  orchestrator created (it keeps billing).
 
   --include-infra Also delete the landing zone stack (NAT, Route Server, SG,
                   key pair). Runner and VPC remain.
@@ -1150,7 +1187,15 @@ Teardown levels:
   --all           Full nuke — environment + landing zone + bootstrap stack.
                   Removes VPC (if stack-created) and runner. In BYO-VPC mode,
                   only resources created by this stack inside the VPC will be
-                  removed — nothing pre-existing is touched.
+                  removed — nothing pre-existing is touched. When an
+                  orchestrator-created storage stack exists, --all also needs
+                  --delete-storage: the file system sits in the VPC's subnet.
+
+  --delete-storage
+                  Also delete the FSx for NetApp ONTAP storage stack
+                  <bootstrap-stack>-evs-storage, after the environment: the
+                  datastore and every VM on it. Turns off its termination
+                  protection first. A BYO-FSxN file system is never deleted.
 
 Examples:
   python3 destroy.py --bootstrap-stack evs-bootstrap-myenv --region us-east-2
@@ -1182,6 +1227,12 @@ Examples:
         help="Skip host deletion (if already deleted)",
     )
     parser.add_argument(
+        "--delete-storage", action="store_true",
+        help="Also delete the FSx for NetApp ONTAP storage stack <bootstrap-stack>-evs-storage "
+             "the orchestrator created, including the datastore and every VM on it. Kept by "
+             "default. Required with --all when that stack exists.",
+    )
+    parser.add_argument(
         "--yes", "-y", action="store_true",
         help="Skip confirmation prompt",
     )
@@ -1193,6 +1244,9 @@ Examples:
 
     if (args.all or args.include_infra) and not args.bootstrap_stack:
         parser.error("--all and --include-infra require --bootstrap-stack")
+
+    if args.delete_storage and not args.bootstrap_stack:
+        parser.error("--delete-storage requires --bootstrap-stack")
 
     # --all implies --include-infra
     if args.all:
@@ -1210,6 +1264,7 @@ Examples:
         "environment_id": args.environment_id,  # CLI override takes priority
         "aws_config_stack": None,
         "stack_created_vpc": False,
+        "environment_lookup_ok": False,
     }
     if args.bootstrap_stack:
         logger.info("Discovering resources from stack: %s", args.bootstrap_stack)
@@ -1219,6 +1274,26 @@ Examples:
         # CLI --environment-id overrides auto-discovery
         if args.environment_id:
             info["environment_id"] = args.environment_id
+
+    # The FSx storage stack is kept unless --delete-storage. --all deletes the
+    # bootstrap stack, whose service access subnet holds the file system's ENI,
+    # so refuse it up front rather than fail after the environment is gone. A
+    # failed check stops the run: guessing "absent" would skip that guard.
+    storage_stack = (principal_storage.stack_name_for(args.bootstrap_stack)
+                     if args.bootstrap_stack else None)
+    storage_exists = False
+    if storage_stack:
+        try:
+            storage_exists = principal_storage.stack_exists(
+                session.client("cloudformation"), storage_stack)
+        except Exception as e:  # noqa: BLE001
+            logger.error("Could not check for FSx storage stack %s (%s). Fix the cause "
+                         "(permissions, throttling) and re-run.", storage_stack, e)
+            sys.exit(1)
+    if args.all and storage_exists and not args.delete_storage:
+        parser.error(f"storage stack {storage_stack} exists, and --all deletes the bootstrap "
+                     f"stack whose subnet holds the file system. Add --delete-storage to delete "
+                     f"it too (the datastore and every VM on it), or drop --all.")
 
     # Confirmation
     if not args.yes:
@@ -1234,6 +1309,10 @@ Examples:
                 "env + landing zone" if args.include_infra else \
                 "environment only (infra preserved)"
         print(f"   Level: {level}")
+        if storage_exists:
+            print(f"   FSx storage stack {storage_stack}: "
+                  + ("DELETED (--delete-storage), including the datastore and every VM on it"
+                     if args.delete_storage else "KEPT, keeps billing"))
         if args.all and info["stack_created_vpc"]:
             print(f"   ⚠️  VPC {info['vpc_id']} will be DELETED (created by this stack)")
         response = input("\n   Type 'destroy' to confirm: ")
@@ -1280,8 +1359,37 @@ Examples:
         # Reclaim the HCX IPAM /28 + pool now the environment is gone (HI-4).
         # No-op for BYO-public-cidr or non-HCX deployments.
         deprovision_hcx_ipam(session, info["vpc_id"], info.get("aws_config_stack"))
-    else:
+    elif info["environment_lookup_ok"]:
         logger.info("No environment found in VPC — skipping environment teardown")
+        environment_confirmed_deleted = True
+    else:
+        # The EVS lookup failed, so an environment may still be running on the
+        # datastore. Treat it as not deleted: storage stays.
+        if storage_exists:
+            logger.warning("Could not confirm there is no EVS environment in the VPC (the EVS "
+                           "lookup failed); keeping storage. Re-run once the lookup succeeds, "
+                           "or pass --environment-id.")
+        environment_confirmed_deleted = False
+
+    # --- FSx for NetApp ONTAP storage stack (storage.principal create mode) ---
+    # Only with --delete-storage. After the environment, so no host still mounts
+    # the export; before the landing zone and bootstrap stacks, whose subnet
+    # holds the file system ENI.
+    if storage_exists and not args.delete_storage:  # --all is refused earlier in this case
+        logger.info("Kept FSx storage stack %s (it keeps billing). Re-run with "
+                    "--delete-storage to delete it.", storage_stack)
+    storage_delete_failed = (args.delete_storage and storage_stack is not None
+                             and not delete_storage_stack(
+                                 session, storage_stack, storage_exists,
+                                 environment_confirmed_deleted))
+    if storage_delete_failed and args.include_infra:
+        # The file system still sits in the bootstrap stack's subnet. Deleting
+        # the landing zone and bootstrap stacks now would half-delete the setup
+        # and leave the file system billing; stop so a re-run can finish it.
+        logger.error("Storage stack %s was not deleted, so the landing zone and bootstrap "
+                     "stacks are kept too. Fix the cause and re-run the same command.",
+                     storage_stack)
+        args.include_infra = args.all = False
 
     # --- Level 2: Landing zone stack ---
     if args.include_infra and info["aws_config_stack"]:

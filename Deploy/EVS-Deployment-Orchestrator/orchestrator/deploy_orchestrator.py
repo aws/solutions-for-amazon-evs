@@ -36,10 +36,15 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote as url_quote
+
+# VCF versions the orchestrator deploys. Each needs bundle pins in
+# vcf_deployment/main.py (PINNED_BUNDLE_VERSIONS) and a matching OVA.
+SUPPORTED_VCF_VERSIONS = ("9.0.2", "9.1.0", "9.1.1")
 
 REQUIRED_PACKAGES = [
     "boto3",
@@ -83,6 +88,7 @@ import requests as http_requests  # noqa: E402
 import yaml  # noqa: E402
 
 import blueprint_version  # noqa: E402  (orchestrator/blueprint_version.py)
+import principal_storage  # noqa: E402  (orchestrator/principal_storage.py)
 
 # === stdout buffering ===
 # Logger output is unbuffered (stderr); bare print() is block-buffered (stdout),
@@ -433,6 +439,8 @@ _STAGE_LABELS = {
     "phase2_deploy": "Create EVS environment + bare-metal hosts",
     "esxi_vlan_tag": "ESXi prep: VLAN tagging",
     "esxi_vmfs_create": "ESXi prep: VMFS datastore",
+    "esxi_nfs_mount": "ESXi prep: mount FSx for NetApp ONTAP datastore",
+    "esxi_vsan_disable": "ESXi prep: leave one-node vSAN (FSxN principal storage)",
     "esxi_ova_deploy": "ESXi prep: deploy SDDC Manager OVA",
     "esxi_ova_verify": "ESXi prep: verify OVA deploy",
     "phase3_deploy": "VCF bringup + NSX edge cluster",
@@ -984,6 +992,10 @@ def stage_phase2_deploy(config: dict, checkpoint: Checkpoint) -> dict:
     )
     evs = EVSManager(aws)
 
+    # FSx for NetApp ONTAP principal storage, before any bare metal bills: a
+    # storage problem then costs minutes, not hours. No-op for vSAN.
+    principal_record = _provision_principal_storage(config, cfg)
+
     env_id = cfg.get("environmentId")
 
     if env_id:
@@ -1094,7 +1106,7 @@ def stage_phase2_deploy(config: dict, checkpoint: Checkpoint) -> dict:
         raise RuntimeError(f"create-and-attach-ebs failed (rc={rc})")
 
     cfg = load_config(config_path)
-    return {"environment_id": cfg.get("environmentId")}
+    return {"environment_id": cfg.get("environmentId"), "principal_storage": principal_record}
 
 
 def stage_esxi_vlan_tag(config: dict, checkpoint: Checkpoint) -> dict:
@@ -1192,6 +1204,134 @@ def stage_esxi_vmfs_create(config: dict, checkpoint: Checkpoint) -> dict:
         return {"status": "created", "datastore": ds_name, "device": target_disk.devicePath}
     finally:
         connect.Disconnect(si)
+
+
+def _esxi_host_ips(config: dict) -> dict[str, str]:
+    """Short hostname -> resolved IP for every ESXi host in the blueprint."""
+    fqdn = config["dns"]["fqdn"]
+    return {short: socket.gethostbyname(f"{short}.{fqdn}") for short in config["hostnames"]["esxi"]}
+
+
+def _mount_nfs_on_esxi_host(host_ip: str, password: str, record: dict,
+                            check_root_write: bool = False) -> str:
+    """Mount (or verify) the principal NFS datastore on one standalone ESXi host.
+
+    Returns "mounted" or "already_mounted". Raises when a datastore of the same
+    name points elsewhere, so a stale datastore can never pass as the principal
+    one. ``check_root_write`` creates and deletes a directory as root, so an
+    export that squashes root (no superuser "sys" in the export policy) fails
+    here instead of in the middle of bring-up.
+    """
+    from pyVim import connect
+    from pyVim.task import WaitForTask
+    from pyVmomi import vim
+
+    name, server, path = record["name"], record["nfs_server"], record["remote_path"]
+    ctx = _unverified_ssl_context()
+    si = connect.SmartConnect(host=host_ip, user="root", pwd=password, sslContext=ctx)
+    try:
+        datacenter = si.content.rootFolder.childEntity[0]
+        host = datacenter.hostFolder.childEntity[0].host[0]
+        status = "mounted"
+        for ds in host.datastore:
+            if ds.name != name:
+                continue
+            nas = getattr(getattr(ds, "info", None), "nas", None)
+            if nas is None or nas.remoteHost != server or nas.remotePath != path:
+                raise RuntimeError(
+                    f"{host_ip}: datastore '{name}' exists but is not {server}:{path} (found "
+                    f"{getattr(nas, 'remoteHost', '?')}:{getattr(nas, 'remotePath', '?')})")
+            status = "already_mounted"
+            break
+        else:
+            spec = vim.host.NasVolume.Specification()
+            spec.remoteHost = server
+            spec.remotePath = path
+            spec.localPath = name
+            spec.accessMode = "readWrite"
+            spec.type = "NFS"  # NFSv3: the installer's nfsDatastoreSpec has no version field
+            host.configManager.datastoreSystem.CreateNasDatastore(spec)
+        if check_root_write:
+            # A name no earlier run or customer file can have, so the probe only
+            # ever deletes the directory this call created. "Already exists" is
+            # a failure: it proves nothing about root's write access.
+            probe = f"[{name}] .edo-root-write-check-{uuid.uuid4().hex}"
+            files = si.content.fileManager
+            try:
+                files.MakeDirectory(name=probe, datacenter=datacenter, createParentDirectories=False)
+            except Exception as e:  # noqa: BLE001
+                raise RuntimeError(
+                    f"{host_ip}: root cannot write to {server}:{path} ({e}). The volume's export "
+                    f"policy must allow the EVS host CIDRs read-write with superuser 'sys' "
+                    f"(no root squash).") from e
+            WaitForTask(files.DeleteDatastoreFile_Task(name=probe, datacenter=datacenter))
+        return status
+    finally:
+        connect.Disconnect(si)
+
+
+def stage_esxi_nfs_mount(config: dict, checkpoint: Checkpoint) -> dict:
+    """Mount the FSx for NetApp ONTAP principal datastore on every ESXi host.
+
+    VCF 9 bring-up with NFS principal storage needs the datastore mounted on the
+    hosts before validation (Broadcom KB 414088). Mounted over vmk0, which the
+    file system's security group admits. Skipped when vSAN is principal.
+    """
+    if principal_storage.principal_entry(config) is None:
+        return {"status": "skipped", "reason": "vSAN is principal storage"}
+    record = (checkpoint.get_result("phase2_deploy") or {}).get("principal_storage")
+    if not record:
+        raise RuntimeError("esxi_nfs_mount: phase2_deploy left no principal_storage record. "
+                           "Re-run with --start-from phase2_deploy.")
+    results = {}
+    for index, (short, ip) in enumerate(_esxi_host_ips(config).items()):
+        results[short] = _mount_nfs_on_esxi_host(
+            ip, _get_esxi_password(config, short), record, check_root_write=index == 0)
+        logger.info("esxi_nfs_mount: %s (%s) '%s' %s:%s -> %s", short, ip, record["name"],
+                    record["nfs_server"], record["remote_path"], results[short])
+    return {"datastore": record["name"], "hosts": results}
+
+
+def _disable_vsan_on_esxi_host(host_ip: str, password: str) -> str:
+    """Leave the one-node vSAN cluster on a host with no claimed vSAN disks."""
+    from pyVim import connect
+    from pyVim.task import WaitForTask
+    from pyVmomi import vim
+
+    ctx = _unverified_ssl_context()
+    si = connect.SmartConnect(host=host_ip, user="root", pwd=password, sslContext=ctx)
+    try:
+        host = si.content.rootFolder.childEntity[0].hostFolder.childEntity[0].host[0]
+        vsan = host.configManager.vsanSystem
+        if vsan is None or not vsan.config.enabled:
+            return "already_disabled"
+        storage = vsan.config.storageInfo
+        if storage and storage.diskMapping:
+            raise RuntimeError(f"{host_ip}: vSAN has claimed disks; refusing to disable it. FSx "
+                               f"principal storage is only for hosts without local storage.")
+        WaitForTask(vsan.UpdateVsan_Task(vim.vsan.host.ConfigInfo(enabled=False)))
+        if host.configManager.vsanSystem.config.enabled:
+            raise RuntimeError(f"{host_ip}: vSAN still enabled after UpdateVsan_Task")
+        return "disabled"
+    finally:
+        connect.Disconnect(si)
+
+
+def stage_esxi_vsan_disable(config: dict, checkpoint: Checkpoint) -> dict:
+    """Leave the one-node vSAN cluster each EVS host boots with (FSxN only).
+
+    With NFS principal storage the installer never builds a vSAN cluster, and
+    its "Creating vSphere vLCM managed cluster" step fails on hosts still in a
+    one-node vSAN cluster (vim.vmware.vlcm.error.batchAddHostsToCluster).
+    Skipped when vSAN is principal. Idempotent.
+    """
+    if principal_storage.principal_entry(config) is None:
+        return {"status": "skipped", "reason": "vSAN is principal storage"}
+    results = {}
+    for short, ip in _esxi_host_ips(config).items():
+        results[short] = _disable_vsan_on_esxi_host(ip, _get_esxi_password(config, short))
+        logger.info("esxi_vsan_disable: %s (%s) -> %s", short, ip, results[short])
+    return {"hosts": results}
 
 
 def stage_esxi_ova_deploy(config: dict, checkpoint: Checkpoint) -> dict:
@@ -1452,6 +1592,10 @@ def stage_phase3_deploy(config: dict, checkpoint: Checkpoint) -> dict:
         verify_tls=verify_tls_by_host[installer_host],
         verify_tls_by_host=verify_tls_by_host,
         post_bringup_hook=_upgrade_tls_after_bringup,
+        # FSx for NetApp ONTAP principal storage: installer-VMFS evacuation and
+        # NSX edge placement target this datastore instead of vSAN.
+        principal_datastore=((checkpoint.get_result("phase2_deploy") or {})
+                             .get("principal_storage") or {}).get("name"),
         dry_run=False,
     )
 
@@ -2364,6 +2508,23 @@ def _allocate_hcx_eips_in_cidr(ec2, cidr: str, tag_name: str,
     return eip_allocation_ids
 
 
+def _wait_aws_config_stack(cfn, waiter_name: str, stack_name: str) -> None:
+    """Wait for the landing-zone stack; on failure, raise with the stack-event reason.
+
+    A bare WaiterError says only "ROLLBACK_COMPLETE". The reason (for example a
+    Route 53 "Rate exceeded" throttle) is what tells a retry from a real error,
+    and a --resume deletes the rolled-back stack and creates it again.
+    """
+    from botocore.exceptions import WaiterError
+    try:
+        cfn.get_waiter(waiter_name).wait(
+            StackName=stack_name, WaiterConfig={"Delay": 30, "MaxAttempts": 80})
+    except WaiterError as e:
+        raise RuntimeError(
+            f"Landing zone stack {stack_name} failed: "
+            f"{principal_storage.first_failure(cfn, stack_name)}") from e
+
+
 def stage_aws_config(config: dict, checkpoint: Checkpoint) -> dict:
     """Deploy the aws_config CloudFormation stack (bootstrap mode only).
 
@@ -2461,14 +2622,12 @@ def stage_aws_config(config: dict, checkpoint: Checkpoint) -> dict:
         # RouteServer handler rejects duplicate tag keys).
         cfn.create_stack(StackName=stack_name, TemplateBody=template_body)
         logger.info("aws_config: stack create initiated — waiting (5-10 min)")
-        cfn.get_waiter("stack_create_complete").wait(
-            StackName=stack_name, WaiterConfig={"Delay": 30, "MaxAttempts": 80})
+        _wait_aws_config_stack(cfn, "stack_create_complete", stack_name)
     else:
         try:
             cfn.update_stack(StackName=stack_name, TemplateBody=template_body)
             logger.info("aws_config: stack update initiated — waiting")
-            cfn.get_waiter("stack_update_complete").wait(
-                StackName=stack_name, WaiterConfig={"Delay": 30, "MaxAttempts": 80})
+            _wait_aws_config_stack(cfn, "stack_update_complete", stack_name)
         except cfn.exceptions.ClientError as e:
             if "No updates are to be performed" not in str(e):
                 raise
@@ -2570,6 +2729,8 @@ STAGES = [
     ("phase2_deploy", stage_phase2_deploy),
     ("esxi_vlan_tag", stage_esxi_vlan_tag),
     ("esxi_vmfs_create", stage_esxi_vmfs_create),
+    ("esxi_nfs_mount", stage_esxi_nfs_mount),
+    ("esxi_vsan_disable", stage_esxi_vsan_disable),
     ("esxi_ova_deploy", stage_esxi_ova_deploy),
     ("esxi_ova_verify", stage_esxi_ova_verify),
     ("phase3_deploy", stage_phase3_deploy),
@@ -2577,7 +2738,8 @@ STAGES = [
 
 STAGE_IDS = [s[0] for s in STAGES]
 
-ESXI_PREWORK_STAGES = {"esxi_vlan_tag", "esxi_vmfs_create", "esxi_ova_deploy", "esxi_ova_verify"}
+ESXI_PREWORK_STAGES = {"esxi_vlan_tag", "esxi_vmfs_create", "esxi_nfs_mount", "esxi_vsan_disable",
+                       "esxi_ova_deploy", "esxi_ova_verify"}
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -2628,6 +2790,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         default=False,
         help="Tear down the EVS environment: delete hosts, EBS volume, secrets, and environment",
+    )
+    parser.add_argument(
+        "--delete-storage",
+        action="store_true",
+        default=False,
+        help="With --destroy: also delete the FSx for NetApp ONTAP storage stack "
+             "(<stack-name>-evs-storage) the orchestrator created, including the datastore "
+             "and every VM on it. Without it the file system is kept and keeps billing. "
+             "A BYO-FSxN file system is never deleted.",
     )
     parser.add_argument(
         "--vpc-create",
@@ -2701,6 +2872,29 @@ def _normalize_config(config: dict, vpc_create: bool | None = None) -> None:
         # "9.0.2.0" -> "9.0.2" (bundle filter uses major.minor.patch only)
         parts = evs["vcf_version"].split(".")
         phase3["target_version"] = ".".join(parts[:3]) if len(parts) >= 3 else evs["vcf_version"]
+
+
+def _esxi_host_count_errors(config: dict, count: int) -> list[str]:
+    """Too few ESXi hosts for the VCF management domain, as error messages.
+
+    Simple deployments need 3 hosts with vSAN and 2 with NFS principal storage
+    (FSx for NetApp ONTAP), which the VCF Installer accepts on two hosts. HA
+    (simple_deployment: false) needs 4 either way, for the 3 NSX Manager nodes.
+    Amazon EVS itself sets no minimum in Self-deployed mode.
+    """
+    if not config.get("evs", {}).get("simple_deployment", True):
+        if count < 4:
+            return [f"HA mode (simple_deployment: false) requires at least 4 ESXi hosts "
+                    f"(VCF deploys 3 NSX Manager nodes), got {count}. Either add hosts or "
+                    f"set simple_deployment: true for a single-NSX-node deployment."]
+        return []
+    if principal_storage.principal_entry(config) is not None:
+        minimum, why = 2, "the VCF minimum with FSx for NetApp ONTAP principal storage"
+    else:
+        minimum, why = 3, "the VCF minimum for vSAN"
+    if count < minimum:
+        return [f"hostnames.esxi must have at least {minimum} hosts ({why}), got {count}"]
+    return []
 
 
 def _validate_config(config: dict):
@@ -2795,10 +2989,10 @@ def _validate_config(config: dict):
     # major.minor prefix. New versions require code changes (bundle pins,
     # OVA, spec builder), so rejecting unknown versions here prevents a
     # multi-hour failure deep in phase 3.
-    supported_vcf_prefixes = ("9.0.2", "9.1.0")
+    supported_vcf_prefixes = SUPPORTED_VCF_VERSIONS
     vcf_version = evs.get("vcf_version", "").strip()
     if vcf_version and not re.match(r"^\d+\.\d+\.\d+(\.\d+)?$", vcf_version):
-        errors.append(f"evs.vcf_version must be a version like '9.0.2.0' or '9.1.0.0', got: '{vcf_version}'")
+        errors.append(f"evs.vcf_version must be a version like '9.0.2.0', '9.1.0.0' or '9.1.1.0', got: '{vcf_version}'")
     elif vcf_version and not any(vcf_version.startswith(p) for p in supported_vcf_prefixes):
         errors.append(
             f"evs.vcf_version '{vcf_version}' is not a supported version. "
@@ -2896,25 +3090,13 @@ def _validate_config(config: dict):
         # canonical uppercase form regardless of blueprint capitalization.
         sizing["edge_form_factor"] = edge_ff.upper()
 
-    # hostnames.esxi: must be a list of at least 3 unique strings (EVS minimum).
-    # NOTE: botocore 1.43.2 declares hosts min:4 (HostInfoForCreateList), but
-    # server-side EVS historically accepts 3 — keep the permissive >=3 check
-    # until 4 is confirmed required.
+    # hostnames.esxi: a list of unique hostnames, at least the VCF minimum for
+    # the principal storage (_esxi_host_count_errors).
     esxi_hosts = hostnames_cfg.get("esxi", [])
     if not isinstance(esxi_hosts, list):
         errors.append(f"hostnames.esxi must be a list, got: {type(esxi_hosts).__name__}")
-    elif len(esxi_hosts) < 3:
-        errors.append(f"hostnames.esxi must have at least 3 hosts (EVS minimum), got {len(esxi_hosts)}")
     else:
-        # HA mode (simple_deployment: false) requires at least 4 hosts
-        # for the 3 NSX Manager nodes. Simple mode works with 3.
-        if not evs.get("simple_deployment", True) and len(esxi_hosts) < 4:
-            errors.append(
-                f"HA mode (simple_deployment: false) requires at least 4 ESXi "
-                f"hosts (VCF deploys 3 NSX Manager nodes which need the extra "
-                f"capacity), got {len(esxi_hosts)}. Either add a 4th host or "
-                f"set simple_deployment: true for a single-NSX-node deployment."
-            )
+        errors.extend(_esxi_host_count_errors(config, len(esxi_hosts)))
         for h in esxi_hosts:
             if not isinstance(h, str) or len(h) > 63 or not re.match(r"^[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?$", h):
                 errors.append(f"hostnames.esxi entries must be valid hostnames (1-63 chars, alphanumeric + hyphens, no leading/trailing hyphen), got: '{h}'")
@@ -3041,6 +3223,14 @@ def _validate_config(config: dict):
                     or (octets[0] == 192 and octets[1] == 168)):
                     errors.append(f"hcx.public_cidr must be a PUBLIC /28 CIDR (not RFC 1918 private), got: '{hcx_cidr}'")
         # else: no public_cidr provided → will be auto-provisioned via IPAM in stage_aws_config
+
+    # storage.principal.type: vsan, or fsxn (FSx for NetApp ONTAP) with an fsxn
+    # block holding volume_id (BYO-FSxN) or every creation field. Static checks only; the instance
+    # type's real disks are checked against EC2 in _principal_storage_preflight.
+    storage_warnings = []
+    principal_storage.validate(config, errors, storage_warnings)
+    for warning in storage_warnings:
+        logger.warning(warning)
 
     if errors:
         raise ValueError("Blueprint validation failed:\n  • " + "\n  • ".join(errors))
@@ -3249,6 +3439,162 @@ def _instance_type_preflight(config: dict) -> None:
         "instance_type preflight OK: '%s' is supported by Amazon EVS in %s",
         instance_type, region,
     )
+
+
+def _principal_storage_preflight(config: dict) -> None:
+    """Check storage.principal against the instance type's real local storage.
+
+    ec2:DescribeInstanceTypes says whether the type has local instance storage.
+    Without it vSAN cannot be built, so the blueprint needs FSx for NetApp ONTAP;
+    with it, the type uses vSAN. This catches a type whose disks differ from what
+    the blueprint assumes, before anything is created. Skipped with a warning
+    when the call is denied or the type is unknown in this Region; then only
+    _instance_type_preflight's evs:GetVersions check applies.
+    """
+    instance_type = config["evs"]["instance_type"]
+    session = boto3.Session(
+        profile_name=config["aws"].get("profile"),
+        region_name=config["aws"]["region"],
+    )
+    try:
+        has_disks = principal_storage.instance_has_local_storage(
+            session.client("ec2"), instance_type)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("principal storage preflight skipped: could not describe instance "
+                       "type '%s' (%s)", instance_type, e)
+        return
+    if has_disks is None:
+        logger.warning("principal storage preflight skipped: EC2 does not list instance "
+                       "type '%s' in %s", instance_type, config["aws"]["region"])
+        return
+    problems = principal_storage.eligibility_errors(config, has_disks)
+    if problems:
+        raise ValueError("Blueprint validation failed:\n  • " + "\n  • ".join(problems))
+    logger.info("principal storage preflight OK: %s has %slocal instance storage, using %s",
+                instance_type, "" if has_disks else "no ",
+                "vSAN" if principal_storage.principal_entry(config) is None
+                else "FSx for NetApp ONTAP")
+
+
+def _provision_principal_storage(config: dict, cfg: dict) -> dict | None:
+    """Make the FSx for NetApp ONTAP principal datastore ready, before bare metal.
+
+    Create mode deploys the storage stack; BYO-FSxN creates nothing. Either way
+    the file system is verified and its NFS endpoint recorded in config.json as
+    principalStorage, which is what makes the bring-up spec use
+    nfsDatastoreSpec. Also mirrored into ``cfg``, the dict the later phase2 steps
+    build the spec from. Returns None when vSAN is principal storage.
+    """
+    entry = principal_storage.principal_entry(config)
+    if entry is None:
+        return None
+    session = boto3.Session(
+        profile_name=config["aws"].get("profile"),
+        region_name=config["aws"]["region"],
+    )
+    if principal_storage.is_existing(entry):
+        ids = principal_storage.byo_ids(session.client("fsx"),
+                                        principal_storage.settings(entry)["volume_id"])
+        logger.info("phase2_deploy storage: BYO-FSxN volume %s on %s, checking it (nothing "
+                    "is created)", ids["volume_id"], ids["file_system_id"])
+    else:
+        logger.info("phase2_deploy storage: creating FSx for NetApp ONTAP (stack %s)",
+                    principal_storage.stack_name(config))
+        outputs = principal_storage.deploy_stack(
+            _aws_config_cfn(config), config, entry, AWS_CONFIG_TAGS, logger,
+            fsx=session.client("fsx"))
+        ids = {"file_system_id": outputs["FileSystemId"],
+               "svm_id": outputs["StorageVirtualMachineId"],
+               "volume_id": outputs["VolumeId"]}
+    record = principal_storage.verify(
+        session.client("fsx"), session.client("ec2"), config, entry, ids)
+    for warning in record.get("warnings", []):
+        logger.warning("phase2_deploy storage: %s", warning)
+    written = principal_storage.config_record(record)
+    data = json.loads(GENERATED_CONFIG_PATH.read_text())
+    data["principalStorage"] = written
+    GENERATED_CONFIG_PATH.write_text(json.dumps(data, indent=2) + "\n")
+    cfg["principalStorage"] = written
+    logger.info("phase2_deploy storage: datastore '%s' -> %s:%s verified before any bare metal",
+                record["name"], record["nfs_server"], record["remote_path"])
+    return record
+
+
+def _protect_principal_storage(config: dict) -> None:
+    """Turn on termination protection for the create-mode storage stack.
+
+    Runs only after every stage succeeded: the file system now holds the
+    management appliances. A failed deployment leaves the stack unprotected so
+    it can be cleaned up. No-op for vSAN and BYO-FSxN, which have no stack.
+    """
+    entry = principal_storage.principal_entry(config)
+    if entry is None or principal_storage.is_existing(entry):
+        return
+    principal_storage.protect_stack(_aws_config_cfn(config), principal_storage.stack_name(config),
+                                    logger)
+
+
+def _active_environment_in_vpc(config: dict) -> bool | None:
+    """Whether an EVS environment that is not DELETED uses the deployment VPC.
+
+    None when the EVS lookup fails, which proves nothing either way.
+    """
+    vpc_id = (config.get("vpc") or {}).get("id")
+    session = boto3.Session(
+        profile_name=config["aws"].get("profile"),
+        region_name=config["aws"]["region"],
+    )
+    try:
+        evs = session.client("evs")
+        for page in evs.get_paginator("list_environments").paginate():
+            for summary in page.get("environmentSummaries", []):
+                env = evs.get_environment(environmentId=summary["environmentId"]).get(
+                    "environment", {})
+                if env.get("vpcId") == vpc_id and env.get("environmentState") != "DELETED":
+                    return True
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Could not list EVS environments to check VPC %s: %s", vpc_id, e)
+        return None
+    return False
+
+
+class StorageDeleteFailed(RuntimeError):
+    """The storage stack was asked to be deleted, and was not."""
+
+
+def _destroy_principal_storage(config: dict, delete_storage: bool) -> str | None:
+    """Delete the create-mode storage stack only when ``delete_storage`` is set.
+
+    BYO-FSxN file systems are never in it. Returns a note for the teardown
+    summary when a storage stack was kept, else None.
+
+    Raises:
+        StorageDeleteFailed: the delete did not finish. The caller must keep the
+            landing zone, whose teardown would otherwise strand the file system.
+    """
+    session = boto3.Session(
+        profile_name=config["aws"].get("profile"),
+        region_name=config["aws"]["region"],
+    )
+    name = principal_storage.stack_name(config)
+    cfn = _aws_config_cfn(config)
+    note = None
+    if delete_storage:
+        if not principal_storage.delete_stack(cfn, session.client("fsx"), name, logger):
+            raise StorageDeleteFailed(
+                f"FSx for NetApp ONTAP storage stack {name} was not deleted and keeps "
+                f"billing. Check its stack events, then re-run --destroy --delete-storage.")
+    elif principal_storage.stack_exists(cfn, name):
+        note = (f"FSx for NetApp ONTAP storage stack {name} was kept and keeps billing. "
+                f"Re-run --destroy with --delete-storage to delete it (and every VM on the "
+                f"datastore) before deleting the bootstrap stack, whose subnet holds the "
+                f"file system.")
+        logger.info(note)
+    if principal_storage.is_existing(principal_storage.principal_entry(config)):
+        logger.info("BYO-FSxN volume %s was kept: the orchestrator never deletes a file system "
+                    "it did not create. The management appliance files remain on it.",
+                    principal_storage.settings(principal_storage.principal_entry(config))["volume_id"])
+    return note
 
 
 def _destroy_aws_config(config: dict) -> None:
@@ -3578,7 +3924,7 @@ def _teardown_hcx_networking(config: dict, phase: str, environment_id: str | Non
                            "frees once the EIP is released", pid, e)
 
 
-def run_destroy(config: dict):
+def run_destroy(config: dict, delete_storage: bool = False):
     """Tear down the EVS environment and all associated resources.
 
     Deletion order:
@@ -3605,6 +3951,20 @@ def run_destroy(config: dict):
 
     if not env_id:
         logger.warning("No environmentId found in config.json — skipping environment teardown")
+        # The storage stack is created before the environment, so it can exist
+        # without one. But a missing ID does not prove there is no environment:
+        # check EVS before deleting a datastore hosts may still use.
+        if delete_storage and _active_environment_in_vpc(config) is not False:
+            logger.error("Keeping the storage stack and the landing zone: an EVS environment "
+                         "in this VPC may still use the datastore (or the EVS lookup failed). "
+                         "Delete the environment first, then re-run --destroy --delete-storage.")
+            sys.exit(1)
+        try:
+            _destroy_principal_storage(config, delete_storage)
+        except StorageDeleteFailed as e:
+            logger.error("%s The landing zone was kept.", e)
+            _notify(config, "EVS destroy PARTIAL/FAILED", f"{e} The landing zone was kept.")
+            sys.exit(1)
         _destroy_aws_config_if_present(config)
         return
 
@@ -3807,6 +4167,18 @@ def run_destroy(config: dict):
                 f"environment shows DELETED.")
         sys.exit(1)
 
+    # Remove the FSx for NetApp ONTAP storage stack now the hosts, and so the
+    # NFS mounts, are gone, but only with --delete-storage. Otherwise it is kept:
+    # it holds the management appliances and is termination-protected.
+    try:
+        storage_note = _destroy_principal_storage(config, delete_storage)
+    except StorageDeleteFailed as e:
+        logger.error("%s The landing zone was kept, so the bootstrap stack delete would "
+                     "fail too.", e)
+        _notify(config, "EVS destroy PARTIAL/FAILED",
+                f"Environment {env_id} was deleted, but {e} The landing zone was kept.")
+        sys.exit(1)
+
     # Step 6: remove the aws_config landing zone (bootstrap OR an orphaned
     # non-bootstrap stack — see _destroy_aws_config_if_present). Bootstrap-CFN
     # resources (VPC, subnets, IGW, IAM, runner) are left for the stack delete.
@@ -3851,6 +4223,8 @@ def run_destroy(config: dict):
     logger.info("  Environment %s deleted", env_id)
     logger.info("  VCF appliance secrets deleted: %s", secret_names_deleted or "(none found)")
     logger.info("  EBS volume(s) removed")
+    if storage_note:
+        logger.info("  %s", storage_note)
     if leftover_host_secrets:
         logger.info("  ESXi host secrets (evs!%s_*): %d were NOT auto-removed by "
                     "EVS and were deleted explicitly (see warning above)",
@@ -3878,7 +4252,8 @@ def run_destroy(config: dict):
         config, "EVS destroy SUCCEEDED",
         f"Environment {env_id} and orchestrator-created AWS resources have "
         f"been deleted. If this was a bootstrap-mode deployment, delete the "
-        f"bootstrap CloudFormation stack next to remove the VPC/runner/IAM role.",
+        f"bootstrap CloudFormation stack next to remove the VPC/runner/IAM role."
+        + (f"\n\n{storage_note}" if storage_note else ""),
     )
 
     if GENERATED_CONFIG_PATH.exists():
@@ -3925,6 +4300,7 @@ def main():
             # Runs unconditionally (even on --resume): it's a seconds-long
             # read-only call, and a wrong instance_type is fatal in every mode.
             _instance_type_preflight(config)
+            _principal_storage_preflight(config)
             # Skip vCPU preflight when resuming from a stage after phase2_deploy
             # (hosts already exist and are billing — the check would double-count them).
             phase2_idx = STAGE_IDS.index("phase2_deploy")
@@ -3970,8 +4346,11 @@ def main():
         sys.exit(1)
 
     if args.destroy:
-        run_destroy(config)
+        run_destroy(config, delete_storage=args.delete_storage)
         return
+    if args.delete_storage:
+        logger.error("--delete-storage only applies with --destroy")
+        sys.exit(2)
 
     config_hash = hashlib.sha256(
         json.dumps(config, sort_keys=True).encode()
@@ -4170,6 +4549,8 @@ def main():
         f"  Other roles: vcenterRoot, nsxAdmin, nsxRoot, sddcManagerRoot, "
         f"operationsAdmin, edgeAppliance."
     )
+
+    _protect_principal_storage(config)
 
     logger.info("=" * 60)
     logger.info("ALL STAGES COMPLETE — your VCF environment is ready")

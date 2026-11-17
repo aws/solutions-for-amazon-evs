@@ -43,7 +43,9 @@ Output defaults to `sddc_spec_<version>.json` in the current directory.
 - Management domain / DNS suffix
 - Naming prefix (drives `<prefix>-cl01` / `-dc01` / `-dvs01`)
 - Simple vs. HA deployment
-- EVS host EC2 instance type (drives EVC mode)
+- EVS host EC2 instance type (drives EVC mode). Only types with local
+  disks for vSAN are offered; for diskless types with FSx for NetApp ONTAP
+  storage, use the orchestrator.
 - DNS + NTP servers
 - Appliance short hostnames (each defaulted)
 - Per-VLAN CIDRs (gateway + IP-pool ranges are derived)

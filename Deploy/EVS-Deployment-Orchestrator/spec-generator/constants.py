@@ -86,7 +86,14 @@ RESOURCE_POOL_TYPE = "management"
 EVC_MODE_BY_INSTANCE_TYPE = {
     "i7i.metal-24xl": "INTEL_SAPPHIRERAPIDS",
     "i7i.metal-48xl": "INTEL_SAPPHIRERAPIDS",
+    "r7i.metal-24xl": "INTEL_SAPPHIRERAPIDS",
+    "r7i.metal-48xl": "INTEL_SAPPHIRERAPIDS",
 }
+
+# Instance types this generator offers. It always builds a vSAN datastore
+# spec, so it lists only types with local NVMe for vSAN. Diskless types use
+# FSx for NetApp ONTAP principal storage, which only the orchestrator builds.
+VSAN_INSTANCE_TYPES = ("i4i.metal", "i7i.metal-24xl", "i7i.metal-48xl")
 
 # ESXi host credentials.
 ESXI_USERNAME = "root"

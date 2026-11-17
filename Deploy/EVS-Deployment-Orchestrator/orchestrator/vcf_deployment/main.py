@@ -193,6 +193,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--vcenter-username", default="administrator@vsphere.local")
     parser.add_argument("--vcenter-password", default=None)
     parser.add_argument(
+        "--principal-datastore",
+        default=None,
+        help="Name of the FSx for NetApp ONTAP principal datastore when the cluster was "
+             "brought up without vSAN (storage.principal in the blueprint). "
+             "Installer-datastore evacuation and edge VM placement target it instead of "
+             "a vSAN datastore. The deploy-vcf-and-edge pipeline supplies this.",
+    )
+    parser.add_argument(
         "--cluster-name",
         default=None,
         help="Cluster name for cluster-scoped vCenter actions (e.g. "
@@ -701,6 +709,69 @@ def _handle_prepare_depot(
     )
 
 
+# Pinned bundle versions per VCF release, matched against the target version
+# by longest prefix ("9.1.1" before "9.1"). The 9.1.1 versions are the ones the
+# installer resolved in an end-to-end EVS canary run.
+PINNED_BUNDLE_VERSIONS: dict[str, dict[str, str]] = {
+    "9.0.2": {
+        "VCENTER":             "9.0.2.0.25148086",
+        "NSX_T_MANAGER":       "9.0.2.0.25150386",
+        "SDDC_MANAGER":        "9.0.2.0.25151285",
+        "VROPS":               "9.0.2.0.25137838",
+        "VCF_OPS_CLOUD_PROXY": "9.0.2.0.25137840",
+        "VRSLCM":              "9.0.2.0.25137839",
+        "VRA":                 "9.0.2.0.25145732",
+    },
+    "9.1": {
+        "VCENTER":                           "9.1.0.0100.25417926",
+        "NSX_T_MANAGER":                     "9.1.0.0100.25470810",
+        "SDDC_MANAGER":                      "9.1.0.0100.25428926",
+        "VROPS":                             "9.1.0.0100.25435105",
+        "VCF_OPS_CLOUD_PROXY":               "9.1.0.0100.25434833",
+        "VCF_FLEET_LCM":                     "9.1.0.0100.25423358",
+        "HCX":                               "9.1.0.0100.25426672",
+        "VCF_SERVICE_VCD_MIGRATION_BACKEND": "9.1.0.0.25370929",
+        "TELEMETRY_ACCEPTOR":                "9.1.0.0.25181946",
+        "VCF_SALT":                          "9.1.0.0100.25434834",
+        "VCF_SDDC_LCM":                      "9.1.0.0100.25423352",
+        "VSP":                               "9.1.0.0.25370367",
+        "VCF_LICENSE_SERVER":                "9.1.0.0100.25434835",
+        "DEPOT_SERVICE":                     "9.1.0.0.25371105",
+        "VCF_SALT_RAAS":                     "9.1.0.0100.25434834",
+        "VIDB":                              "9.1.0.0.25368698",
+        "VRA":                               "9.1.0.0100.25429499",
+    },
+    "9.1.1": {
+        "VCENTER":                           "9.1.1.0.25712839",
+        "NSX_T_MANAGER":                     "9.1.1.0.25691509",
+        "SDDC_MANAGER":                      "9.1.1.0.25713928",
+        "VROPS":                             "9.1.1.0.25679751",
+        "VCF_OPS_CLOUD_PROXY":               "9.1.1.0.25679891",
+        "VCF_FLEET_LCM":                     "9.1.1.0100.25761871",
+        "HCX":                               "9.1.1.0.25690219",
+        "VCF_SERVICE_VCD_MIGRATION_BACKEND": "9.1.1.0.25714559",
+        "TELEMETRY_ACCEPTOR":                "9.1.1.0.25671600",
+        "VCF_SALT":                          "9.1.1.0.25679895",
+        "VCF_SDDC_LCM":                      "9.1.1.0100.25761870",
+        "VSP":                               "9.1.1.0.25714471",
+        "VCF_LICENSE_SERVER":                "9.1.1.0.25679819",
+        "DEPOT_SERVICE":                     "9.1.1.0.25713941",
+        "VCF_SALT_RAAS":                     "9.1.1.0.25679895",
+        "VIDB":                              "9.1.1.0.25679886",
+        "VRA":                               "9.1.1.0.25714559",
+    },
+}
+
+
+def pinned_bundle_versions(target_version: str | None) -> dict[str, str] | None:
+    """The pinned bundle versions for ``target_version``, by longest key prefix."""
+    version_prefix = (target_version or "").strip()
+    for pin_key in sorted(PINNED_BUNDLE_VERSIONS, key=len, reverse=True):
+        if version_prefix and version_prefix.startswith(pin_key):
+            return PINNED_BUNDLE_VERSIONS[pin_key]
+    return None
+
+
 def _download_pinned_bundles(
     client: "InstallerClient",
     bundles: list,
@@ -851,38 +922,6 @@ def _handle_download_all_product_binaries(
     TERMINAL_OK = {"SUCCESSFUL", "COMPLETED"}
     TERMINAL_FAIL = {"FAILED", "CANCELLED"}
 
-    # Pinned bundle versions per VCF release.
-    _PINNED_BUNDLE_VERSIONS: dict[str, dict[str, str]] = {
-        "9.0.2": {
-            "VCENTER":             "9.0.2.0.25148086",
-            "NSX_T_MANAGER":       "9.0.2.0.25150386",
-            "SDDC_MANAGER":        "9.0.2.0.25151285",
-            "VROPS":               "9.0.2.0.25137838",
-            "VCF_OPS_CLOUD_PROXY": "9.0.2.0.25137840",
-            "VRSLCM":              "9.0.2.0.25137839",
-            "VRA":                 "9.0.2.0.25145732",
-        },
-        "9.1": {
-            "VCENTER":                           "9.1.0.0100.25417926",
-            "NSX_T_MANAGER":                     "9.1.0.0100.25470810",
-            "SDDC_MANAGER":                      "9.1.0.0100.25428926",
-            "VROPS":                             "9.1.0.0100.25435105",
-            "VCF_OPS_CLOUD_PROXY":               "9.1.0.0100.25434833",
-            "VCF_FLEET_LCM":                     "9.1.0.0100.25423358",
-            "HCX":                               "9.1.0.0100.25426672",
-            "VCF_SERVICE_VCD_MIGRATION_BACKEND": "9.1.0.0.25370929",
-            "TELEMETRY_ACCEPTOR":                "9.1.0.0.25181946",
-            "VCF_SALT":                          "9.1.0.0100.25434834",
-            "VCF_SDDC_LCM":                      "9.1.0.0100.25423352",
-            "VSP":                               "9.1.0.0.25370367",
-            "VCF_LICENSE_SERVER":                "9.1.0.0100.25434835",
-            "DEPOT_SERVICE":                     "9.1.0.0.25371105",
-            "VCF_SALT_RAAS":                     "9.1.0.0100.25434834",
-            "VIDB":                              "9.1.0.0.25368698",
-            "VRA":                               "9.1.0.0100.25429499",
-        },
-    }
-
     # 1. Fetch the full bundle list.
     catalog = client.raw_get("/v1/bundles")
     bundles = (catalog or {}).get("elements") or []
@@ -890,14 +929,9 @@ def _handle_download_all_product_binaries(
         logger.error("/v1/bundles returned an empty catalog; nothing to download")
         return 1
 
-    # 1b. Check if we have pinned versions for this target. Match by
-    # prefix: "9.1" matches key "9.1", "9.0.2" matches key "9.0.2".
+    # 1b. Check if we have pinned versions for this target.
     version_prefix = (target_version or "").strip()
-    pinned = None
-    for pin_key in sorted(_PINNED_BUNDLE_VERSIONS.keys(), key=len, reverse=True):
-        if version_prefix and version_prefix.startswith(pin_key):
-            pinned = _PINNED_BUNDLE_VERSIONS[pin_key]
-            break
+    pinned = pinned_bundle_versions(target_version)
 
     if pinned:
         return _download_pinned_bundles(client, bundles, pinned, wait, TERMINAL_OK, TERMINAL_FAIL)
@@ -1249,6 +1283,7 @@ def _handle_vcenter(args: argparse.Namespace) -> int:
         password=password,
         verify_tls=_resolve_verify_tls(args, args.vcenter_host),
     )
+    client.principal_datastore_name = getattr(args, "principal_datastore", None) or None
 
     if args.action == "ping-vcenter":
         response = client.ping()
@@ -1746,6 +1781,7 @@ def _handle_edge(args: argparse.Namespace) -> int:
         password=vcenter_password,
         verify_tls=_resolve_verify_tls(args, args.vcenter_host),
     )
+    vcenter.principal_datastore_name = getattr(args, "principal_datastore", None) or None
     spec_path = args.spec_path or _DEFAULT_EDGE_CLUSTER_SPEC_PATH
     manager = EdgeClusterManager(
         nsx=nsx,

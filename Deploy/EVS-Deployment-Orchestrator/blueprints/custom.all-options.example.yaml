@@ -32,8 +32,11 @@
 #                                           #   Enforced by the EVS API, not locally — an invalid name fails
 #                                           #   at the aws_config stage, not at launch.
 #   instance_type: "i4i.metal"              # REQUIRED. ESXi bare-metal type: i4i.metal (128 vCPUs),
-#                                           #   i7i.metal-24xl (96 vCPUs), or i7i.metal-48xl (192 vCPUs).
-#   vcf_version: "9.1.0"                    # REQUIRED. "9.0.2" or "9.1.0".
+#                                           #   i7i.metal-24xl (96 vCPUs), or i7i.metal-48xl (192 vCPUs), which
+#                                           #   use vSAN; or r7i.metal-24xl (96 vCPUs) or r7i.metal-48xl
+#                                           #   (192 vCPUs), which have no local disks and need an FSx for
+#                                           #   NetApp ONTAP storage.principal (see storage: below).
+#   vcf_version: "9.1.0"                    # REQUIRED. "9.0.2", "9.1.0" or "9.1.1".
 #   terms_accepted: true                    # REQUIRED. Must be true (EVS terms acceptance).
 #   simple_deployment: true                 # REQUIRED. true = single NSX Manager (lab/demo);
 #                                           #   false = 3-node NSX Manager cluster + HA Ops (production) — needs 4+ hosts.
@@ -54,7 +57,7 @@
 # hostnames:
 #   # ── HOW TO ADD / REMOVE HOSTS ──────────────────────────────────────────────
 #   #   The number of entries in this list = the number of ESXi hosts.
-#   #     • simple_deployment: true   → minimum 3 hosts
+#   #     • simple_deployment: true   → minimum 3 hosts (vSAN), 2 hosts (FSx for NetApp ONTAP)
 #   #     • simple_deployment: false  → minimum 4 hosts (HA)
 #   #     • Add entries for more capacity, e.g. ["esxi01","esxi02","esxi03","esxi04","esxi05"].
 #   #   Each host is one bare-metal server (i4i.metal = 128 vCPUs,
@@ -74,6 +77,48 @@
 #   # edge01: "edge01"                      # OPTIONAL hostname overrides (sensible defaults if omitted)
 #   # edge02: "edge02"
 #   # vcf_ops: "vcfops"
+
+# storage:                                  # OPTIONAL with local NVMe (vSAN), REQUIRED without it. Leaving it out is
+#   principal:                              #   the same as principal.type: "vsan".
+#     type: "vsan"                          # vSAN ESA on the hosts' local NVMe. Not allowed on instance types
+#                                           #   without local disks. Takes no other fields.
+#
+#   # FSx for NetApp ONTAP as the management cluster's datastore, instead of vSAN.
+#   # Only on instance types without local disks (checked against EC2 at launch). Replace the
+#   # principal block above with:
+#   principal:
+#     type: "fsxn"                          # REQUIRED. "vsan" or "fsxn" (FSx for NetApp ONTAP).
+#     name: "nfs-datastore"                 # REQUIRED. vSphere datastore name (1-42 letters, digits, . _ -).
+#                                           #   Cannot change after deployment.
+#     fsxn:                                 # REQUIRED with type: "fsxn". Only the block named after the type
+#                                           #   is allowed.
+#       # Without volume_id, the orchestrator creates the file system (like the FSx console's
+#       # Quick create), and every field below is REQUIRED. Only when the stack creates the VPC
+#       # (no ExistingVpcId). It is Single-AZ, in the service access subnet, with a security
+#       # group admitting NFS only from the EVS host management VLAN. Kept by teardown unless you
+#       # pass --delete-storage, which deletes it with every VM on it. Name, capacity, throughput
+#       # and storage efficiency can change, but after deployment change them in FSx, not here:
+#       # any blueprint edit makes the next run repeat every stage (README, Principal storage).
+#       file_system_name: "my-vcf-env-fsxn" # Name tag.
+#       storage_capacity_gb: 1024           # 1024-307200 GiB SSD (300 TiB). Can only grow.
+#       throughput_capacity_mbps: 384       # "recommended" (384) or 384 / 768 / 1536 / 3072 / 6144 MB/s.
+#                                           #   The management cluster's disk speed.
+#       storage_efficiency: true            # ONTAP dedupe, compression, compaction. true or false.
+#       s3_access: false                    # Only false is supported for now.
+#                                           # Fixed: one SVM "fsx", one volume at /vol1 (NFSv3, UNIX), no
+#                                           #   tiering, no snapshot policy, backups off.
+#
+#       # Bring your own FSx for NetApp ONTAP (BYO-FSxN): set volume_id instead. Needs BYO-VPC
+#       # (ExistingVpcId). If creation fields are also set, the orchestrator ignores them and
+#       # logs a warning. Never modified or deleted by teardown.
+#       volume_id: "fsvol-0123456789abcdef0" # An ONTAP volume in this Region: RW, UNIX style, with a junction
+#                                           #   path, on a Single-AZ file system in that VPC and the hosts'
+#                                           #   Availability Zone. Its export policy must allow the host
+#                                           #   management VLAN <CidrPrefix>10.0/24 read-write with
+#                                           #   superuser "sys", and the file system's security group must allow
+#                                           #   TCP and UDP 111, 635, 2049 and 4045-4046 from it. All but the
+#                                           #   export policy are checked before any bare metal; a wrong export
+#                                           #   policy fails at the first NFS mount.
 
 # jumpbox:
 #   enabled: false                          # OPTIONAL. true = Windows jumpbox in the public subnet to reach the

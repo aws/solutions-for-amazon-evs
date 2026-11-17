@@ -190,7 +190,13 @@ def _build_cluster_spec(answers):
     return spec
 
 
-def _build_datastore_spec(_answers):
+def _build_datastore_spec(answers):
+    instance_type = answers.get("instance_type") or ""
+    if instance_type and instance_type not in C.VSAN_INSTANCE_TYPES:
+        raise ValueError(
+            f"{instance_type} has no local disks for vSAN. This generator builds "
+            f"vSAN specs only ({', '.join(C.VSAN_INSTANCE_TYPES)}); use the "
+            "orchestrator with storage.principal type fsxn for diskless types.")
     return {
         "vsanSpec": {
             "datastoreName": C.VSAN_DATASTORE_NAME,

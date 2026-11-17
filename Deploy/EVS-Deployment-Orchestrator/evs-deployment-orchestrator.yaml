@@ -74,7 +74,7 @@ Parameters:
     Description: >-
       Full S3 URI of the VCF SDDC Manager OVA — download it from the Broadcom
       Support Portal (https://support.broadcom.com) under your VCF entitlement.
-      Supported VCF versions: 9.0.2 and 9.1.0 (the OVA version MUST match
+      Supported VCF versions: 9.0.2, 9.1.0 and 9.1.1 (the OVA version MUST match
       evs.vcf_version in your blueprint), e.g.
       s3://my-bucket/path/VCF-SDDC-Manager-Appliance-9.1.0.0.xxxxx.ova - NOT
       just a bucket name or key.
@@ -390,12 +390,93 @@ Resources:
                 Resource: "*"
                 Condition:
                   StringEquals:
-                    # Scoped to ONLY these two service-linked roles: evs (the EVS
-                    # environment) and ipam (auto-provisioning the HCX public /28 when HCX
-                    # is on without a BYO cidr; idempotent if the SLR already exists).
+                    # Scoped to ONLY these service-linked roles: evs (the EVS
+                    # environment), ipam (auto-provisioning the HCX public /28 when HCX
+                    # is on without a BYO cidr; idempotent if the SLR already exists),
+                    # and fsx (only when storage.principal creates an FSx for NetApp
+                    # ONTAP file system: FSx needs its SLR to create the file system ENI).
                     iam:AWSServiceName:
                       - evs.amazonaws.com
                       - ipam.amazonaws.com
+                      - fsx.amazonaws.com
+              # FSx for NetApp ONTAP principal storage (blueprint storage.principal).
+              # Reads are unscoped: BYO-FSxN checks a file system the customer
+              # created.
+              - Sid: FsxRead
+                Effect: Allow
+                Action:
+                  - fsx:DescribeFileSystems
+                  - fsx:DescribeStorageVirtualMachines
+                  - fsx:DescribeVolumes
+                  - fsx:ListTagsForResource
+                Resource: "*"
+              # Creates and tags happen only through CloudFormation (the storage
+              # stack) and only with our ManagedBy tag in the request. The runner
+              # cannot call TagResource itself, so it cannot put ManagedBy on a
+              # BYO-FSxN resource; CloudFormation tags only resources in a stack,
+              # and this role cannot import resources into one. That is what makes
+              # the tag-scoped changes and deletes below sufficient.
+              # Each create is authorized against the NEW resource (request tag)
+              # and, for an SVM or volume, against its PARENT (resource tag). The
+              # new-resource statements list only the new resource's ARN, so a
+              # parent passes only with our ManagedBy tag: no SVM or volume can be
+              # created inside a BYO-FSxN file system.
+              - Sid: FsxCreateFileSystemViaCloudFormation
+                Effect: Allow
+                Action: [fsx:CreateFileSystem, fsx:TagResource]
+                Resource: !Sub "arn:aws:fsx:${AWS::Region}:${AWS::AccountId}:*"
+                Condition:
+                  StringEquals:
+                    aws:RequestTag/ManagedBy: evs-orchestrator
+                  ForAnyValue:StringEquals:
+                    aws:CalledVia: cloudformation.amazonaws.com
+              - Sid: FsxCreateSvmViaCloudFormation
+                Effect: Allow
+                Action: fsx:CreateStorageVirtualMachine
+                Resource: !Sub "arn:aws:fsx:${AWS::Region}:${AWS::AccountId}:storage-virtual-machine/*"
+                Condition:
+                  StringEquals:
+                    aws:RequestTag/ManagedBy: evs-orchestrator
+                  ForAnyValue:StringEquals:
+                    aws:CalledVia: cloudformation.amazonaws.com
+              - Sid: FsxCreateVolumeViaCloudFormation
+                Effect: Allow
+                Action: fsx:CreateVolume
+                Resource: !Sub "arn:aws:fsx:${AWS::Region}:${AWS::AccountId}:volume/*"
+                Condition:
+                  StringEquals:
+                    aws:RequestTag/ManagedBy: evs-orchestrator
+                  ForAnyValue:StringEquals:
+                    aws:CalledVia: cloudformation.amazonaws.com
+              # The parents (file system for an SVM, SVM for a volume) must carry our
+              # ManagedBy tag. One ARN for every FSx type: the tag condition is what
+              # scopes it.
+              - Sid: FsxCreateInOwnParent
+                Effect: Allow
+                Action: [fsx:CreateStorageVirtualMachine, fsx:CreateVolume]
+                Resource: !Sub "arn:aws:fsx:${AWS::Region}:${AWS::AccountId}:*"
+                Condition:
+                  StringEquals:
+                    aws:ResourceTag/ManagedBy: evs-orchestrator
+                  ForAnyValue:StringEquals:
+                    aws:CalledVia: cloudformation.amazonaws.com
+              # Changes and deletes only on file systems this orchestrator created
+              # (ManagedBy tag), so a BYO-FSxN file system can never be modified or
+              # deleted by the runner. The tag condition, not the ARN, scopes it.
+              # Teardown deletes the volume itself with SkipFinalBackup before the
+              # stack, so no FSx backup is created and none is ever deleted.
+              - Sid: FsxModifyOwnOnly
+                Effect: Allow
+                Action:
+                  - fsx:UpdateFileSystem
+                  - fsx:UpdateVolume
+                  - fsx:DeleteFileSystem
+                  - fsx:DeleteStorageVirtualMachine
+                  - fsx:DeleteVolume
+                Resource: !Sub "arn:aws:fsx:${AWS::Region}:${AWS::AccountId}:*"
+                Condition:
+                  StringEquals:
+                    aws:ResourceTag/ManagedBy: evs-orchestrator
               - Sid: SupportAndQuotaChecks
                 Effect: Allow
                 Action:
@@ -562,6 +643,17 @@ Resources:
                   - cloudformation:ListStackResources
                 Resource:
                   - !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}-amazon-evs-*-infrastructure/*"
+                  # The FSx for NetApp ONTAP storage stack (create mode only). A
+                  # separate stack so teardown can delete it before the landing zone
+                  # and bootstrap stacks, whose service access subnet holds its ENI.
+                  - !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}-evs-storage/*"
+              - Sid: CloudFormationStorageStackProtection
+                # Termination protection on the FSx for NetApp ONTAP storage stack:
+                # turned on after a successful deployment, and off only by
+                # --destroy --delete-storage.
+                Effect: Allow
+                Action: cloudformation:UpdateTerminationProtection
+                Resource: !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}-evs-storage/*"
               - Sid: CloudFormationSignalOwnStack
                 # The runner signals its own CreationPolicy after preflight so
                 # bad inputs fail this stack in minutes.
@@ -911,7 +1003,9 @@ Outputs:
     Description: >-
       Tear down the EVS environment and orchestrator-created resources (run
       BEFORE deleting this stack). Connect to the runner (via SSM Session
-      Manager or SSH) and run this command.
+      Manager or SSH) and run this command. It keeps an FSx for NetApp ONTAP
+      storage stack the orchestrator created; add --delete-storage to delete
+      it and every VM on it.
     Value: !Sub
       - "cd /opt/evs/src/Deploy/EVS-Deployment-Orchestrator/orchestrator && sudo NOTIFICATION_TOPIC_ARN='${TopicArnOut}' python3.11 deploy_orchestrator.py --config blueprint.yaml --vpc-create ${VpcCreateFlagOut} --destroy"
       - TopicArnOut: !If [CreateNotifications, !Ref SnsTopicArn, ""]
@@ -924,6 +1018,8 @@ Outputs:
     Description: IMPORTANT - teardown order
     Value: >-
       1) Run the orchestrator with --destroy (see DestroyCommand) to remove the
-      EVS environment and orchestrator-created AWS resources. 2) Only then
+      EVS environment and orchestrator-created AWS resources. With an FSx for
+      NetApp ONTAP storage stack, add --delete-storage, or this stack's delete
+      fails while the file system remains in its subnet. 2) Only then
       delete this stack. Deleting the stack first strands billing bare-metal
       hosts.
