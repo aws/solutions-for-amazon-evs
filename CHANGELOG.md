@@ -12,6 +12,8 @@ Every release is also on the
 
 ## [Unreleased]
 
+## [1.1.0]
+
 Adds support for `r7i.metal-24xl` and `r7i.metal-48xl` hosts, which have no
 local disks, by using Amazon FSx for NetApp ONTAP for the VCF management
 datastore. Also adds VCF 9.1.1, and the Amazon EVS Agent Skill, which enables

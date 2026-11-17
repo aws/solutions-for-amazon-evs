@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0]
+
 ### Added
 
 - `storage.principal` blueprint field: `type: "vsan"` (the default, the same as leaving `storage` out) or `type: "fsxn"`, FSx for NetApp ONTAP as the management cluster's datastore, for instance types with no local disks. The FSx settings go in a `storage.principal.fsxn` block. Without `fsxn.volume_id` the orchestrator creates a Single-AZ file system in the service access subnet, in a VPC the stack creates, and every Quick create field is required; with `fsxn.volume_id` (needs BYO-VPC) it uses your own volume and never modifies or deletes it, and ignores any creation fields with a warning. Whether an instance type has local storage is read from `ec2:DescribeInstanceTypes` at launch. Works with every supported VCF 9 version. A simple deployment with `type: "fsxn"` needs 2 hosts instead of 3, and the VCF NFS network goes on the host management subnet (VLAN 0, MTU 1500), as in the Amazon EVS User Guide
