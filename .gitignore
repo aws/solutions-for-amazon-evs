@@ -10,5 +10,9 @@
 # Local coding-agent settings (one developer's permissions and paths).
 .claude/settings.local.json
 
+# The Amazon EVS Agent Skill's per-deployment review files (plans, blueprints,
+# deployment-state.json, Python environments).
+evs-deployments/
+
 # Python bytecode, written when the release scripts or their tests run.
 __pycache__/
